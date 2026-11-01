@@ -107,6 +107,19 @@ test("invitation relay credentials expire with the invitation and stay bound aft
  expect(state.relayDigests()).toEqual([createHash("sha256").update(kept.relayToken!).digest("hex")]);
  expect(dropped.relayToken).not.toBe(kept.relayToken);
 });
+test("a multi-use invitation's relay credential survives the first device",()=>{
+ const state=new State(temp());cleanup.push(()=>state.close());
+ const invite=state.invite("control",3600,true,2),shared=createHash("sha256").update(invite.relayToken!).digest("hex");
+ const first=state.pair(invite.code,"Reviewer iPhone");
+ // The first phone swaps to its own credential (as iOS does on its first snapshot), then is revoked.
+ const own=createHash("sha256").update(state.relayCredential(first.deviceId)).digest("hex");
+ expect(state.relayDigests()).toEqual([shared,own].sort());
+ state.revoke(first.deviceId);expect(state.relayDigests()).toEqual([shared]);
+ const second=state.pair(invite.code,"Reviewer iPad");
+ // Uses are spent, but the second device still holds the invitation credential until it swaps.
+ expect(state.relayDigests()).toEqual([shared]);
+ state.revoke(second.deviceId);expect(state.relayDigests()).toEqual([]);
+});
 test("certificate renewal: the old key signs the successor's pin and switching keeps the same names",async()=>{
  const directory=join(temp(),"host"),config=await initialize(directory,{url:"https://10.89.0.1:8443",listen:"127.0.0.1",port:8443,sans:["laptop.local"]});
  const state=new State(directory);cleanup.push(()=>state.close());

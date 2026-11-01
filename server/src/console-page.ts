@@ -22,7 +22,7 @@ input[type=checkbox]{width:auto}textarea{min-height:90px;font-family:ui-monospac
 button{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:8px;padding:7px 12px;cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.danger{color:var(--bad)}button:disabled{opacity:.5;cursor:default}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row select{width:auto;flex:0 1 auto}table{width:100%;border-collapse:collapse;font-size:14px}
-td,th{text-align:left;padding:7px 4px;border-top:1px solid var(--line);vertical-align:middle}th{color:var(--muted);font-weight:500;border-top:0}
+td,th{text-align:left;padding:7px 4px;border-top:1px solid var(--line);vertical-align:middle}td input{min-width:9em}.table{overflow-x:auto}th{color:var(--muted);font-weight:500;border-top:0}
 .qr{background:#fff;border-radius:8px;padding:8px;width:min(280px,100%);margin-top:12px}.qr svg{display:block;width:100%;height:auto}
 #notice{position:sticky;top:0;z-index:2;display:none;max-width:960px;margin:0 auto;padding:10px 16px}#notice div{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:10px 12px}
 #notice.error div{border-left-color:var(--bad)}.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px}
@@ -40,7 +40,7 @@ td,th{text-align:left;padding:7px 4px;border-top:1px solid var(--line);vertical-
  <select id="pair-ttl" aria-label="Valid for"><option value="300">Valid 5 minutes</option><option value="900">Valid 15 minutes</option><option value="3600">Valid 1 hour</option></select>
  <button class="primary" id="pair">Show pairing QR code</button></div>
  <p class="muted" id="pair-note">Scan it with the AI Agent Remote app. It works once and contains a secret: don't share a screenshot.</p><div id="qr"></div></section>
-<section class="wide"><h2>Devices</h2><table><thead><tr><th>Name</th><th>Access</th><th>Paired</th><th></th></tr></thead><tbody id="devices"></tbody></table></section>
+<section class="wide"><h2>Devices</h2><div class="table"><table><thead><tr><th>Name</th><th>Access</th><th>Paired</th><th></th></tr></thead><tbody id="devices"></tbody></table></div></section>
 <section><h2>Settings <span class="muted" style="font-weight:400;font-size:12px">saved to config.json</span></h2><form id="settings"></form></section>
 <section><h2>Relay</h2><div id="relay"></div></section>
 <section><h2>Certificate</h2><dl id="certificate"></dl><div class="row" style="margin-top:12px"><button id="renew">Renew now</button></div>
