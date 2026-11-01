@@ -2,27 +2,27 @@
 class AgentRemoteBridge < Formula
   desc "Bridge for the AI Agent Remote app: watch and control coding agents from your phone"
   homepage "https://github.com/gremia-tech/agent-remote-bridge"
-  version "0.1.25"
+  version "0.1.26"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.25/agent-remote-bridge-0.1.25-macos-arm64.zip"
-      sha256 "4b3d8fb921baf8f1b815938ec668725642b6fbb93e8dfa0aad6b23e3293e6bd5"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.26/agent-remote-bridge-0.1.26-macos-arm64.zip"
+      sha256 "80f76656587d89276acfa9f5ab8354a2201d21dc2036474d359d06e2bd896d78"
     end
     on_intel do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.25/agent-remote-bridge-0.1.25-macos-x64.zip"
-      sha256 "e1a7737a7cec423e01aeb211484b9a5f7b82a0442ab0fb92d6ba7e9c39a3f085"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.26/agent-remote-bridge-0.1.26-macos-x64.zip"
+      sha256 "b9331c47c8f8c5daab838cd7bdb9d2cbb6665b212d07ffcc77490e6b2490353f"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.25/agent-remote-bridge-0.1.25-linux-arm64.zip"
-      sha256 "4c8eabc7d4291e127ceab7d7d48a9c9c352865ac2c8782af339bac315b16e87f"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.26/agent-remote-bridge-0.1.26-linux-arm64.zip"
+      sha256 "28a67e621c7ff45f065a09473346f1317e6256183db664ec6a04a1b25bb9bf81"
     end
     on_intel do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.25/agent-remote-bridge-0.1.25-linux-x64.zip"
-      sha256 "10c5eb2553ad5161d74898c79fa3dc12b3edb6f19988000d049f637252c8e5a1"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.26/agent-remote-bridge-0.1.26-linux-x64.zip"
+      sha256 "7527f9d0fa200e0b35a4cf29031db84f516b16febfc025cd63054e38585b7c1f"
     end
   end
 
