@@ -11,6 +11,7 @@ export function failure(error: unknown) {
 }
 function safeMessage(code: string) {
   const messages: Record<string,string> = {
+    agent_blocked:"The agent is waiting for an approval or an answer. Answer it in the terminal first.",
     invalid_name:"Use a lowercase agent name, starting with a letter, with letters, digits, - or _, up to 32 characters.", agent_not_installed:"Install and configure this agent tool in the coding environment first.",
     invalid_request:"The request is invalid.", invalid_credentials:"Pair this device again.", invitation_expired:"This invitation has expired or was already used.",
     forbidden:"This device does not have permission.", origin_denied:"Browser origins are not permitted.", not_found:"The requested resource was not found.",

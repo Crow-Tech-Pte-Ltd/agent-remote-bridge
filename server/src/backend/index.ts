@@ -44,7 +44,10 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   }
   function makeIdentity(state:any,p:any,process?:any):PaneIdentity {
     const processRef=(p.agent?process?.foreground_process_group_id:process?.shell_pid)??process?.shell_pid??null;
-    return {paneId:p.pane_id,identityToken:sha(JSON.stringify([state._epoch,p.pane_id,p.terminal_id,p.agent??null,p.agent_session??null,processRef])),revision:p.revision??0,agent:p.agent??'shell',status:p.agent_status??'unknown'};
+    // Codex reports its session from a shared app-server daemon, whose hook environment names the pane that
+    // started the daemon: Herdr's session for a Codex pane may belong to any Codex pane, so it is no identity.
+    const session=p.agent==='codex'?null:p.agent_session??null;
+    return {paneId:p.pane_id,identityToken:sha(JSON.stringify([state._epoch,p.pane_id,p.terminal_id,p.agent??null,session,processRef])),revision:p.revision??0,agent:p.agent??'shell',status:p.agent_status??'unknown'};
   }
   const requireAgentBinary=options.requireAgentBinary??process.env.HMR_REQUIRE_AGENT_BINARIES==='1';
   // The bridge may run without the login shell's PATH, so common per-user install folders are searched too.
@@ -103,18 +106,20 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
         const claudeHome=options.claudeConfigDir??(!options.homeDir?process.env.CLAUDE_CONFIG_DIR:undefined);
         const piSessions=!options.homeDir?process.env.PI_CODING_AGENT_SESSION_DIR:undefined,qwenHome=!options.homeDir?process.env.QWEN_HOME:undefined;
         const roots={...(codexHome?{codex:join(codexHome,'sessions')}:{}),...(claudeHome?{claude:join(claudeHome,'projects')}:{}),...(piSessions?{pi:piSessions}:{}),...(qwenHome?{qwen:join(qwenHome,'projects')}:{})};
-        let native=before.p.agent_session as NativeSession|undefined;
+        // Herdr's session for a Codex pane is not trusted (see makeIdentity); Codex panes are always looked up.
+        let native=before.p.agent==='codex'?undefined:before.p.agent_session as NativeSession|undefined;
         // Herdr only learns a session from the agent's start hook; agents started before it was installed,
         // or through a resume picker, have none, so look for their log here.
         if(!native&&before.p.agent){
           const cwd=before.p.foreground_cwd||before.p.cwd;
           const processes=(before.process?.foreground_processes??[]).map((x:any)=>({pid:x.pid,name:x.name,cwd:x.cwd,argv:Array.isArray(x.argv)?x.argv:undefined}));
-          const claimed=new Set<string>(before.state.panes.map((x:any)=>x.agent_session?.value).filter(Boolean));
-          const sharedFolder=before.state.panes.some((x:any)=>x.pane_id!==paneId&&x.agent===before.p.agent&&!x.agent_session&&(x.foreground_cwd||x.cwd)===cwd);
+          const claimed=new Set<string>(before.state.panes.filter((x:any)=>x.agent!=='codex').map((x:any)=>x.agent_session?.value).filter(Boolean));
+          const sharedFolder=before.state.panes.some((x:any)=>x.pane_id!==paneId&&x.agent===before.p.agent&&(x.agent==='codex'||!x.agent_session)&&(x.foreground_cwd||x.cwd)===cwd);
           const title=typeof before.p.terminal_title_stripped==='string'?before.p.terminal_title_stripped:undefined;
           // The search walks the agent's whole log folder; the phone polls every few seconds, so the answer is
           // kept while the same processes, title and claims hold (a miss is retried after a short while).
-          const key=JSON.stringify([before.identity.identityToken,processes.map((x:any)=>[x.pid,x.cwd??null]),title??null,cwd,[...claimed].sort(),sharedFolder]);
+          // Codex animates a spinner in front of the title while it works; only the name itself counts.
+          const key=JSON.stringify([before.identity.identityToken,processes.map((x:any)=>[x.pid,x.cwd??null]),title?.replace(/^[^\p{L}\p{N}]+/u,'')??null,cwd,[...claimed].sort(),sharedFolder]);
           const cached=discovered.get(`${name}\0${paneId}`);
           if(cached&&cached.key===key&&(cached.native||Date.now()-cached.at<10_000))native=cached.native;
           else {
@@ -156,7 +161,9 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
         // one paste (multi-line text stays one message), then Enter separately so it submits.
         if(/\x1b\[20[01]~/.test(text))throw new BackendError('invalid_text','Text cannot contain paste markers',400);
         await call(name,'pane.send_input',{pane_id:paneId,text:`\x1b[200~${text}\x1b[201~`,keys:[]},true);
-        await Bun.sleep(60);
+        // Herdr's own agent.prompt waits 300 ms (AGENT_PROMPT_SUBMIT_DELAY); an earlier Enter can land
+        // inside Codex's paste handling and become a newline instead of a submit.
+        await Bun.sleep(300);
         return call(name,'pane.send_input',{pane_id:paneId,text:'',keys:['Enter']},true);
       }
       return call(name,'pane.send_input',{pane_id:paneId,text,keys:submit?['Enter']:[]},true);
