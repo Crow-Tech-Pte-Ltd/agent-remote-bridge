@@ -1,7 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import { randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { HostBackend, TerminalHandle, TerminalFrame } from "./backend/types";
-import { Controls, deadline } from "./control";
+import { Controls, deadline, scrollNotches } from "./control";
 import type { Lease } from "./control";
 import { BridgeError, failure } from "./errors";
 import { State, hash, canonical } from "./state";
@@ -177,12 +177,9 @@ export function createBridge(options:BridgeOptions) {
         else {
           only(value,["type","leaseId","direction","lines"]);if(!["up","down"].includes(str(value.direction)))throw new BridgeError("invalid_request","Scroll direction");
           const lines=integer(value.lines,1,1000);
-          // Herdr turns each terminal.scroll into ONE wheel event for apps that read the mouse or use
-          // alternate scroll (Codex, pagers), whatever `lines` says. Send one desktop-sized notch
-          // (3 lines) per command so those apps scroll as far as a shell's scrollback does.
-          const column=Math.floor(lease.size.cols/2),row=Math.floor(lease.size.rows/2);
-          for(let left=lines,n=0;left>0&&n<60;left-=3,n++)await deadline(lease.handle!.command({type:"terminal.scroll",direction:value.direction,lines:Math.min(3,left),column,row}));
-          lease.scrolled=Math.max(0,(lease.scrolled??0)+(value.direction==="up"?lines:-lines));
+          // Only what was actually sent counts, so "Latest" later scrolls back exactly that far.
+          const sent=await scrollNotches(lease.handle!,value.direction as "up"|"down",lines,lease.size);
+          lease.scrolled=Math.max(0,(lease.scrolled??0)+(value.direction==="up"?sent:-sent));
         }
         lease.expires=Date.now()+controls.ttl;
       });return;

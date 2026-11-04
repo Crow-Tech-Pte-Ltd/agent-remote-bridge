@@ -31,7 +31,11 @@ function userTurn(t:string):{kind:'message'|'notice'|'tool_result';text:string}|
   if(t.startsWith('<local-command-stdout>')){const out=tag(t,'local-command-stdout');return out?{kind:'tool_result',text:out}:undefined;}
   if(t.startsWith('<task-notification>'))return {kind:'notice',text:tag(t,'summary')||'Background task finished'};
   if(t.startsWith('<turn_aborted>')||t.startsWith('[Request interrupted'))return {kind:'notice',text:'Interrupted'};
-  if(/^(<[a-z][a-z0-9]*(?:[_ -][a-z0-9]+)+>|# AGENTS\.md instructions)/.test(t))return;
+  // Codex continues a /goal by injecting its context as a user message; it is not something the user said.
+  if(t.startsWith('<codex_internal_context')){const source=t.match(/^<codex_internal_context[^>]*\bsource="([^"]*)"/)?.[1]??'';return /goal/.test(source)?{kind:'notice',text:'Goal continued'}:undefined;}
+  // `!command` in Codex: the command and its output, shown as shell activity.
+  if(t.startsWith('<user_shell_command>')){const command=tag(t,'command').trim(),result=tag(t,'result').trim();return command?{kind:'tool_result',text:`$ ${command}${result?`\n${result}`:''}`}:undefined;}
+  if(/^(<[a-z][a-z0-9]*(?:[_ -][a-z0-9]+)+(?:\s[^>]*)?>|# AGENTS\.md instructions)/.test(t))return;
   return {kind:'message',text:t};
 }
 /** Allowlist published content. Reasoning/thinking, system prompts, internal events are never projected. */

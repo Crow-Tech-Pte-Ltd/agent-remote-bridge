@@ -26,7 +26,7 @@ export function rpc(socketPath: string, method: string, params: Record<string, u
         if (reply.id !== id) throw Error('Unexpected reply identifier');
         if (reply.error) {
           const c = String(reply.error.code);
-          finish(new BackendError(c, String(reply.error.message), /not_found|unknown_pane|unknown_workspace/.test(c) ? 404 : /controller|busy|conflict/.test(c) ? 409 : /unknown_method|unsupported|invalid_request/.test(c) ? 501 : 400));
+          finish(new BackendError(c, String(reply.error.message), /not_found|unknown_pane|unknown_workspace/.test(c) ? 404 : /controller|busy|conflict|blocked/.test(c) ? 409 : /unknown_method|unsupported|invalid_request/.test(c) ? 501 : 400));
         } else if ('result' in reply) finish(undefined, reply.result);
         else throw Error('Missing result');
       } catch { failed('herdr_protocol', 'Herdr returned an invalid reply'); }

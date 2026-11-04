@@ -40,6 +40,9 @@ async function firstLine(path:string,limit=256*1024):Promise<any> {
     return JSON.parse(data.subarray(0,nl<0?data.length:nl).toString('utf8'));}catch{return;}finally{await handle.close();}
 }
 interface Candidate {id:string;path:string}
+/** Codex's own terminal UI. The VS Code extension and Codex Desktop write sessions in the same folder,
+ *  and the TUI itself reports `source:"vscode"` in some versions, so the originator tells them apart. */
+const TUI_ORIGINATORS=new Set(['codex-tui','codex_cli_rs']);
 /** Interactive Codex sessions (not guardian reviews, exec runs or spawned sub-agents) in `cwd`, written since `since`. */
 export async function codexCandidates(root:string,cwd:string,since:number):Promise<Candidate[]> {
   const found:Candidate[]=[];let budget=20000;
@@ -53,6 +56,7 @@ export async function codexCandidates(root:string,cwd:string,since:number):Promi
       if(((await stat(path).catch(()=>null))?.mtimeMs??0)<since)continue;
       const meta=await firstLine(path);const p=meta?.type==='session_meta'?meta.payload:undefined;
       if(!p||p.cwd!==cwd||typeof p.id!=='string'||typeof p.source!=='string'||p.source==='exec'||p.thread_source==='guardian_review')continue;
+      if(typeof p.originator==='string'&&!TUI_ORIGINATORS.has(p.originator))continue;
       found.push({id:p.id,path});
     }
   }
@@ -73,16 +77,26 @@ async function claudeCandidates(root:string,cwd:string,since:number):Promise<Can
  *  next to sessions/ (newest line per id wins, so renames count). Returns the ids currently named as
  *  the title says. */
 export async function codexThreadsNamed(sessionsRoot:string,title:string,cwd?:string):Promise<string[]> {
+  const name=codexTitleName(title,cwd);
+  if(!name||name.length<3)return [];
+  return [...await codexThreadNames(sessionsRoot)].filter(([,n])=>n===name).map(([id])=>id);
+}
+/** The thread name in a Codex title, without the spinner Codex animates in front of it while working or the
+ *  folder after it. A title that is only the folder (a new thread not named yet) has no name. */
+export function codexTitleName(title:string,cwd?:string):string|undefined {
   let name=title.replace(/^[^\p{L}\p{N}]+/u,'').trim();
   const folder=cwd?basename(cwd):undefined;
+  if(folder&&name===folder)return;
   if(folder&&name.endsWith(` | ${folder}`))name=name.slice(0,-folder.length-3).trim();
-  if(name.length<3)return [];
-  const handle=await open(join(dirname(sessionsRoot),'session_index.jsonl'),'r').catch(()=>null);if(!handle)return [];
+  return name||undefined;
+}
+async function codexThreadNames(sessionsRoot:string):Promise<Map<string,string>> {
+  const names=new Map<string,string>();
+  const handle=await open(join(dirname(sessionsRoot),'session_index.jsonl'),'r').catch(()=>null);if(!handle)return names;
   try{
     const size=(await handle.stat()).size,length=Math.min(size,8*1024*1024);const buf=Buffer.alloc(length);await handle.read(buf,0,length,size-length);
-    const names=new Map<string,string>();
     for(const line of buf.toString('utf8').split('\n')){try{const r=JSON.parse(line);if(typeof r?.id==='string'&&typeof r?.thread_name==='string')names.set(r.id,r.thread_name);}catch{}}
-    return [...names].filter(([,n])=>n===name).map(([id])=>id);
+    return names;
   }finally{await handle.close();}
 }
 // Agents render Markdown links as "text (url)" or just text, so links and URLs are compared as their text.
@@ -112,7 +126,12 @@ export async function discoverSession(agent:string,processes:AgentProcess[],root
   if(agent!=='codex'&&agent!=='claude')return;
   const proc=processes.find(p=>harnessFor(p.name??'',p.argv??[])?.kind===agent);if(!proc)return;
   const ref=(value:string):NativeSession=>({source:`herdr:${agent}`,agent,kind:'id',value});
-  const fromArgs=sessionFromArgs(agent,proc.argv??[]);if(fromArgs)return ref(fromArgs);
+  const fromArgs=sessionFromArgs(agent,proc.argv??[]);
+  // `codex resume <id>` (how Herdr restores sessions) stays on the command line after /new, /resume or
+  // /fork switch threads inside Codex; the thread named in the title is what the pane shows now.
+  const named=agent==='codex'&&options.title?await codexThreadsNamed(roots.codex,options.title,proc.cwd):[];
+  if(named.length===1)return ref(named[0]!);
+  if(fromArgs&&(!named.length||named.includes(fromArgs)))return ref(fromArgs);
   if(!proc.cwd)return;
   const start=await startedAt(proc.pid);if(start===undefined)return;
   const since=start-5000;
@@ -121,13 +140,13 @@ export async function discoverSession(agent:string,processes:AgentProcess[],root
   const all=agent==='codex'?await codexCandidates(roots.codex,proc.cwd,since):await claudeCandidates(roots.claude,proc.cwd,since);
   // The thread name in the title is the best evidence: one thread with that name is the one shown,
   // whichever folder it was started in.
-  if(agent==='codex'&&options.title){
-    const named=await codexThreadsNamed(roots.codex,options.title,proc.cwd);
-    if(named.length===1)return ref(named[0]!);
-    const local=all.filter(c=>named.includes(c.id));if(local.length===1)return ref(local[0]!.id);
-  }
+  const local=all.filter(c=>named.includes(c.id));if(local.length===1)return ref(local[0]!.id);
+  // Right after /new the title is only the folder until Codex names the thread. A lone candidate that
+  // already has a name is then the previous thread, not the one on screen.
+  const unnamed=agent==='codex'&&options.title!==undefined&&!codexTitleName(options.title,proc.cwd);
+  const stale=unnamed&&all.length===1&&(await codexThreadNames(roots.codex)).has(all[0]!.id);
   const unclaimed=all.filter(c=>!options.claimed.has(c.id));
-  if(unclaimed.length===1&&all.length===1&&!options.sharedFolder)return ref(unclaimed[0]!.id);
+  if(unclaimed.length===1&&all.length===1&&!options.sharedFolder&&!stale)return ref(unclaimed[0]!.id);
   if(!all.length||all.length>24||!options.screen)return;
   const raw=await options.screen().catch(()=>'');
   // Codex's /status panel prints the session id (wrapped across lines).

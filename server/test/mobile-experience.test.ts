@@ -114,6 +114,10 @@ test("scrolling sends one desktop-sized notch per command so mouse-driven apps m
     {type:"terminal.scroll",direction:"up",lines:3,column:66,row:20},
     {type:"terminal.scroll",direction:"up",lines:3,column:66,row:20},
     {type:"terminal.scroll",direction:"up",lines:1,column:66,row:20}]);
+  // Releasing control scrolls the pane back down in the same notches, so Codex on the computer is at the bottom again.
+  await f.request(`/v1/control/${lease.leaseId}`,d.token,"DELETE");
+  await eventually(()=>f.backend.commands.filter(c=>c.type==="terminal.scroll"&&c.direction==="down").length===3);
+  expect(f.backend.commands.filter(c=>c.type==="terminal.scroll"&&c.direction==="down").map(c=>[c.lines,c.column,c.row])).toEqual([[3,66,20],[3,66,20],[1,66,20]]);
 });
 
 test("snapshot_changed is sent when state changes, not on every tick",async()=>{

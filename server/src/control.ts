@@ -18,6 +18,14 @@ export function deadline<T>(promise:Promise<T>,ms=15_000,ambiguous=false):Promis
   let timer:ReturnType<typeof setTimeout>;
   return Promise.race([promise,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new BridgeError(ambiguous?"delivery_unknown":"host_unavailable","Backend timeout",503,ambiguous)),ms);})]).finally(()=>clearTimeout(timer));
 }
+/** Herdr turns each terminal.scroll into ONE wheel event for apps that read the mouse or use alternate
+ *  scroll (Codex, pagers), whatever `lines` says. Send desktop-sized notches (3 lines) at mid-pane so those
+ *  apps scroll as far as a shell's scrollback does. Returns the lines actually sent. */
+export async function scrollNotches(handle:TerminalHandle,direction:"up"|"down",lines:number,size:{cols:number;rows:number},maxNotches=60):Promise<number> {
+  const column=Math.floor(size.cols/2),row=Math.floor(size.rows/2);let sent=0;
+  for(let n=0;sent<lines&&n<maxNotches;n++){const step=Math.min(3,lines-sent);await deadline(handle.command({type:"terminal.scroll",direction,lines:step,column,row}));sent+=step;}
+  return sent;
+}
 export interface Lease {
   leaseId:string;deviceId:string;paneId:string;identityToken:string;session?:string;expires:number;
   handle?:TerminalHandle;active:boolean;frames:TerminalFrame[];bytes:number;replayable:boolean;
@@ -99,17 +107,17 @@ export class Controls {
     lease.active=false;this.leases.delete(lease.leaseId);
     const handle=lease.handle,resized=lease.size.cols!==lease.hostSize.cols||lease.size.rows!==lease.hostSize.rows;
     // Scroll position belongs to the pane: leave it at the bottom for the computer.
-    const scrolled=handle&&(lease.scrolled??0)>0&&reason!=="identity_changed"?handle.command({type:"terminal.scroll",direction:"down",lines:Math.min(1000,lease.scrolled!)}).catch(()=>{}):Promise.resolve();
+    const scrolled=handle&&(lease.scrolled??0)>0&&reason!=="identity_changed"?scrollNotches(handle,"down",Math.min(1000,lease.scrolled!),lease.size,340).then(()=>{},()=>{}):Promise.resolve();
     if(handle&&resized&&park){
       this.parked.set(this.key(lease.session,lease.paneId),{deviceId:lease.deviceId,session:lease.session,paneId:lease.paneId,hostSize:lease.hostSize,since:Date.now()});
-      void deadline(scrolled.then(()=>Bun.sleep(100)),1000).catch(()=>{}).finally(()=>handle.close());this.onReleased(lease,reason);return Promise.resolve();
+      void deadline(scrolled.then(()=>Bun.sleep(100)),4000).catch(()=>{}).finally(()=>handle.close());this.onReleased(lease,reason);return Promise.resolve();
     }
     let restored=Promise.resolve();
     if(handle&&resized&&reason!=="identity_changed"){
       // Best effort: give the pane back at the size the computer had, let the helper apply it, then detach.
-      restored=deadline(scrolled.then(()=>handle.command({type:"terminal.resize",...lease.hostSize})).then(()=>Bun.sleep(150)),1500).catch(()=>{}).finally(()=>handle.close());
+      restored=deadline(scrolled.then(()=>handle.command({type:"terminal.resize",...lease.hostSize})).then(()=>Bun.sleep(150)),4500).catch(()=>{}).finally(()=>handle.close());
     } else if(handle&&(lease.scrolled??0)>0) {
-      restored=deadline(scrolled.then(()=>Bun.sleep(100)),1000).catch(()=>{}).finally(()=>handle.close());
+      restored=deadline(scrolled.then(()=>Bun.sleep(100)),4000).catch(()=>{}).finally(()=>handle.close());
     } else handle?.close();
     this.onReleased(lease,reason);
     return restored;

@@ -1,16 +1,17 @@
 import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';import {tmpdir} from 'node:os';
-import {discoverSession,sessionFromArgs,parseElapsed} from '../src/backend/session-discovery';
+import {discoverSession,sessionFromArgs,parseElapsed,codexTitleName} from '../src/backend/session-discovery';
+import {scrollNotches} from '../src/control';
 import {normalizeTranscriptRecord,readTranscript} from '../src/backend/transcripts';
 const homes:string[]=[];afterEach(async()=>{for(const p of homes.splice(0))await rm(p,{recursive:true,force:true});});
 const line=(v:any)=>JSON.stringify(v)+'\n';
 const ID=(n:number)=>`01a17891-280d-7c52-92e9-${String(n).padStart(12,'0')}`;
 const user=(text:string)=>({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}});
 const said=(text:string)=>({type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text}]}});
-async function codexHome(sessions:{id:string;cwd:string;source?:any;said?:string[]}[]) {
+async function codexHome(sessions:{id:string;cwd:string;source?:any;originator?:string;said?:string[]}[]) {
   const home=await mkdtemp(join(tmpdir(),'discovery-'));homes.push(home);const dir=join(home,'.codex/sessions/2026/10/26');await mkdir(dir,{recursive:true});
-  for(const s of sessions)await writeFile(join(dir,`rollout-2026-10-26T10-00-00-${s.id}.jsonl`),line({type:'session_meta',payload:{id:s.id,cwd:s.cwd,source:s.source??'cli',timestamp:new Date().toISOString()}})+(s.said??[]).map(t=>line(said(t))).join(''));
+  for(const s of sessions)await writeFile(join(dir,`rollout-2026-10-26T10-00-00-${s.id}.jsonl`),line({type:'session_meta',payload:{id:s.id,cwd:s.cwd,source:s.source??'cli',...(s.originator?{originator:s.originator}:{}),timestamp:new Date().toISOString()}})+(s.said??[]).map(t=>line(said(t))).join(''));
   return {home,roots:{codex:join(home,'.codex/sessions'),claude:join(home,'.claude/projects')}};
 }
 const me=(argv=['codex'],cwd='/work/app')=>[{pid:process.pid,name:'codex',argv,cwd}];
@@ -73,3 +74,39 @@ test('sessions far larger than the old 64 MiB cap still give their newest messag
   const {appendFile}=await import('node:fs/promises');await appendFile(path,line(said('later')));
   const b:any=await readTranscript(f.home,ref,'id',a.cursor);expect(b.reset).toBe(false);expect(b.messages.map((m:any)=>m.text)).toEqual(['later']);
 },30000);
+
+test('after /new, /resume or /fork inside Codex the title, not `codex resume <id>`, names the thread',async()=>{
+  const f=await codexHome([{id:ID(1),cwd:'/work/app'},{id:ID(2),cwd:'/work/app'}]);
+  await writeFile(join(f.home,'.codex/session_index.jsonl'),[{id:ID(1),thread_name:'Fix login'},{id:ID(2),thread_name:'Ship release'}].map(line).join(''));
+  const resumed=me(['codex','resume',ID(1)]);
+  expect((await discoverSession('codex',resumed,f.roots,{...none,title:'⠋ Ship release | app'}))?.value).toBe(ID(2));
+  expect((await discoverSession('codex',resumed,f.roots,{...none,title:'Fix login | app'}))?.value).toBe(ID(1));
+  // No usable name in the title: the command line still decides.
+  expect((await discoverSession('codex',resumed,f.roots,{...none,title:'app'}))?.value).toBe(ID(1));
+});
+test('right after /new, the previous named thread is not shown as the new one',async()=>{
+  const f=await codexHome([{id:ID(1),cwd:'/work/app'}]);
+  expect(codexTitleName('app','/work/app')).toBeUndefined();expect(codexTitleName('⠙ Fix login | app','/work/app')).toBe('Fix login');
+  // Not named yet: the lone candidate is this pane's thread.
+  expect((await discoverSession('codex',me(),f.roots,{...none,title:'app'}))?.value).toBe(ID(1));
+  // Named, but the title shows only the folder: the pane has started a new, unnamed thread.
+  await writeFile(join(f.home,'.codex/session_index.jsonl'),line({id:ID(1),thread_name:'Fix login'}));
+  expect(await discoverSession('codex',me(),f.roots,{...none,title:'app',screen:async()=>''})).toBeUndefined();
+});
+test('VS Code and Codex Desktop conversations in the same folder are not the terminal\'s',async()=>{
+  const f=await codexHome([{id:ID(1),cwd:'/work/app',source:'vscode',originator:'codex_vscode'},{id:ID(2),cwd:'/work/app',source:'vscode',originator:'Codex Desktop'},{id:ID(3),cwd:'/work/app',source:'vscode',originator:'codex-tui'}]);
+  expect((await discoverSession('codex',me(),f.roots,none))?.value).toBe(ID(3));
+});
+test('Codex goal continuations and ! shell commands are not shown as things the user typed',()=>{
+  const texts=(row:any)=>normalizeTranscriptRecord('codex',row,'1').map(m=>`${m.kind}:${m.text}`);
+  expect(texts(user('<codex_internal_context source="goal">\nKeep working on the release until the checklist is done.\n</codex_internal_context>'))).toEqual(['notice:Goal continued']);
+  expect(texts(user('<codex_internal_context source="daemon_recovery">\nstate…\n</codex_internal_context>'))).toEqual([]);
+  expect(texts(user('<user_shell_command>\n<command>\nls -la\n</command>\n<result>\nExit code: 0\nOutput:\nREADME.md\n</result>\n</user_shell_command>'))).toEqual(['tool_result:$ ls -la\nExit code: 0\nOutput:\nREADME.md']);
+  expect(texts(user('<some_block kind="x">\nhidden\n</some_block>'))).toEqual([]);
+});
+test('scrolling sends desktop-sized notches and reports only what was sent',async()=>{
+  const sent:any[]=[];const handle={command:async(v:any)=>{sent.push(v);},close(){}} as any;
+  expect(await scrollNotches(handle,'down',10,{cols:80,rows:24})).toBe(10);
+  expect(sent.map(x=>x.lines)).toEqual([3,3,3,1]);expect(sent[0]).toMatchObject({type:'terminal.scroll',direction:'down',column:40,row:12});
+  sent.length=0;expect(await scrollNotches(handle,'up',1000,{cols:80,rows:24})).toBe(180);expect(sent.length).toBe(60);
+});
