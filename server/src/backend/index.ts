@@ -18,6 +18,9 @@ function modern(version:string):boolean {const m=/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)
 function string(value:unknown,name:string,max=4096):string {if(typeof value!=='string'||value.length===0||value.length>max||value.includes('\0'))throw new BackendError('invalid_argument',`Invalid ${name}`,400);return value;}
 function pathArg(value:unknown):string {const p=string(value,'cwd');if(!isAbsolute(p))throw new BackendError('invalid_cwd','cwd must be absolute',400);return p;}
 /** Public JSON socket adapter. The default socket is explicit/configured, never desktop focus. */
+// Approval dialogs: Codex ("Would you like to run…", "Yes, just this once" / "No, and tell Codex…"),
+// Claude ("Do you want to proceed?", "Do you want to make this edit…").
+const APPROVAL=/Would you like to (run|make|apply|send|grant|allow)|\bNo, and tell Codex\b|\bYes, (proceed|just this once|and (allow|don.t ask))|Do you want to (proceed|make this edit|create|allow|run|delete|overwrite)/;
 export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   const home=options.homeDir??homedir();
   const configured=options.socketPath??(options.configDir?undefined:process.env.HERDR_SOCKET_PATH);
@@ -156,7 +159,16 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
       const name=selected(session),p=await pane(name,paneId);
       if(expectedIdentityToken&&expectedIdentityToken!==p.identity.identityToken)throw new BackendError('identity_changed','Pane identity changed before input dispatch',409);
       if(submit&&p.p.agent) {
-        if(modern(p.state.version))return call(name,'agent.prompt',{target:paneId,text},true);
+        // Herdr's agent.prompt refuses a blocked agent (a question or approval on screen) before
+        // writing anything, and question UIs such as Codex's "Other" field ignore pastes. Type the
+        // answer like the terminal keyboard would, then Enter.
+        const typed=async()=>{
+          // On an approval, typed letters are shortcuts ("y" approves), so leave those to the terminal.
+          const r=await call(name,'pane.read',{pane_id:paneId,source:'visible',format:'text'});
+          if(APPROVAL.test(String((r.read??r).text??'')))throw new BackendError('agent_blocked','The agent is waiting for an approval. Approve or decline it in the terminal first.',409);
+          await call(name,'pane.send_input',{pane_id:paneId,text,keys:[]},true);await Bun.sleep(300);return call(name,'pane.send_input',{pane_id:paneId,text:'',keys:['Enter']},true);};
+        if(p.p.agent_status==='blocked')return typed();
+        if(modern(p.state.version)){try{return await call(name,'agent.prompt',{target:paneId,text},true);}catch(e){if(e instanceof BackendError&&/blocked/.test(e.code))return typed();throw e;}}
         // Older Herdr has no agent.prompt. Agent TUIs enable bracketed paste, so send the text as
         // one paste (multi-line text stays one message), then Enter separately so it submits.
         if(/\x1b\[20[01]~/.test(text))throw new BackendError('invalid_text','Text cannot contain paste markers',400);

@@ -8,14 +8,14 @@ import {terminalArgs} from '../src/backend/terminal';
 import {readWorkspaceFile,resolveWorkspaceRoot} from '../src/backend/workspace-inspection';
 const clean:Array<()=>Promise<any>>=[];afterEach(async()=>{for(const f of clean.splice(0))await f();});
 async function fake(version='0.7.4',extra:Partial<import('../src/backend').HerdrBackendOptions>={}) {
- const dir=await mkdtemp(join(tmpdir(),'herdr-backend-'));let calls:any[]=[];let fg=1;
+ const dir=await mkdtemp(join(tmpdir(),'herdr-backend-'));let calls:any[]=[];let fg=1;const live={status:'idle',screen:'hello',promptBlocked:false};
  const server=createServer(s=>{let buf='';s.on('data',d=>{buf+=d.toString();if(!buf.includes('\n'))return;const r=JSON.parse(buf.split('\n')[0]!);calls.push(r);let result:any;
- if(r.method==='session.snapshot')result={snapshot:{version,protocol:16,workspaces:[{workspace_id:'w1',number:1,label:'Demo',active_tab_id:'w1:t1',pane_count:1,tab_count:1}],tabs:[{tab_id:'w1:t1',workspace_id:'w1',number:1,label:'Main',pane_count:1}],panes:[{pane_id:'w1:p1',terminal_id:'uuid',workspace_id:'w1',tab_id:'w1:t1',agent:'codex',agent_status:'idle',revision:5,cwd:dir,agent_session:{source:'herdr:codex',agent:'codex',kind:'id',value:'abc'}}]}};
+ if(r.method==='session.snapshot')result={snapshot:{version,protocol:16,workspaces:[{workspace_id:'w1',number:1,label:'Demo',active_tab_id:'w1:t1',pane_count:1,tab_count:1}],tabs:[{tab_id:'w1:t1',workspace_id:'w1',number:1,label:'Main',pane_count:1}],panes:[{pane_id:'w1:p1',terminal_id:'uuid',workspace_id:'w1',tab_id:'w1:t1',agent:'codex',agent_status:live.status,revision:5,cwd:dir,agent_session:{source:'herdr:codex',agent:'codex',kind:'id',value:'abc'}}]}};
  else if(r.method==='pane.process_info')result={process_info:{shell_pid:1,foreground_process_group_id:fg,foreground_processes:[{pid:fg,name:'codex',argv:['SECRET']}]}};
- else if(r.method==='pane.read')result={text:'hello',revision:6,truncated:false};else result={accepted:true};s.end(JSON.stringify({id:r.id,result})+'\n');});});
+ else if(r.method==='pane.read')result={text:live.screen,revision:6,truncated:false};else if(r.method==='agent.prompt'&&live.promptBlocked){s.end(JSON.stringify({id:r.id,error:{code:'agent_blocked',message:'agent is blocked'}})+'\n');return;}else result={accepted:true};s.end(JSON.stringify({id:r.id,result})+'\n');});});
  await new Promise<void>(resolve=>server.listen(join(dir,'herdr.sock'),resolve));
  clean.push(async()=>{await new Promise<void>(r=>server.close(()=>r()));await rm(dir,{recursive:true,force:true});});
- return {dir,calls,setFg:(v:number)=>fg=v,backend:createHerdrBackend({configDir:dir,socketPath:join(dir,'herdr.sock'),epoch:'test',...extra})};
+ return {dir,calls,live,setFg:(v:number)=>fg=v,backend:createHerdrBackend({configDir:dir,socketPath:join(dir,'herdr.sock'),epoch:'test',...extra})};
 }
 test('projects public snapshot and keeps identities stable across reads',async()=>{const f=await fake();const s:any=await f.backend.snapshot();expect(s.agents[0].paneId).toBe('w1:p1');expect(s.agents[0].agentSession.value).toBe('abc');expect(JSON.stringify(s)).not.toContain('SECRET');expect(s.capabilities.agentStart).toBe(false);const first=await f.backend.identity(undefined,'w1:p1');expect(first.identityToken).toBe(s.agents[0].identityToken);f.setFg(2);expect((await f.backend.identity(undefined,'w1:p1')).identityToken).not.toBe(first.identityToken);expect((await f.backend.output(undefined,'w1:p1')).text).toBe('hello');});
 test('old Herdr submits an agent prompt as one bracketed paste then Enter; text-only remains literal',async()=>{const f=await fake();await f.backend.submitText(undefined,'w1:p1','line one\nline two',true);const sends=f.calls.filter(c=>c.method==='pane.send_input');expect(sends.slice(-2).map(c=>c.params)).toEqual([{pane_id:'w1:p1',text:'\x1b[200~line one\nline two\x1b[201~',keys:[]},{pane_id:'w1:p1',text:'',keys:['Enter']}]);expect(f.calls.some(c=>c.method==='agent.prompt')).toBe(false);await expect(f.backend.submitText(undefined,'w1:p1','x\x1b[201~y',true)).rejects.toMatchObject({status:400});await expect(f.backend.mutate('agent.start',undefined,{paneId:'w1:p1',name:'test',kind:'codex'})).rejects.toMatchObject({status:501});await f.backend.submitText(undefined,'w1:p1','a\nb',false);expect(f.calls.at(-1).params).toEqual({pane_id:'w1:p1',text:'a\nb',keys:[]});expect(f.calls.some(c=>c.method==='agent.start')).toBe(false);});
@@ -41,4 +41,18 @@ test('modern Herdr starts any agent kind it knows, offers the installed ones and
  await expect(f.backend.mutate('agent.start',undefined,{paneId:'w1:p1',identityToken:token,kind:'gemini',name:'gemini'})).rejects.toMatchObject({status:501,code:'agent_not_installed'});
  await f.backend.mutate('agent.start',undefined,{paneId:'w1:p1',identityToken:token,kind:'kiro',name:'kiro'});
  expect(f.calls.find(c=>c.method==='agent.start')?.params).toMatchObject({pane_id:'w1:p1',kind:'kiro',name:'kiro'});
+});
+test('a blocked agent gets message-box text typed like keystrokes, never on an approval',async()=>{
+ const f=await fake('0.9.5');const sends=()=>f.calls.filter(c=>c.method==='pane.send_input'||c.method==='agent.prompt');
+ f.live.status='blocked';f.live.screen='Which database should we use?\n  1. Postgres\n› 2. Other (free text)';
+ await f.backend.submitText(undefined,'w1:p1','SQLite please',true);
+ expect(sends().map(c=>[c.method,c.params])).toEqual([['pane.send_input',{pane_id:'w1:p1',text:'SQLite please',keys:[]}],['pane.send_input',{pane_id:'w1:p1',text:'',keys:['Enter']}]]);
+ f.calls.length=0;f.live.screen='Would you like to run the following command?\n› 1. Yes, proceed (y)\n  3. No, and tell Codex what to do differently (esc)';
+ await expect(f.backend.submitText(undefined,'w1:p1','yes do it',true)).rejects.toMatchObject({status:409,code:'agent_blocked'});expect(sends()).toEqual([]);
+ f.calls.length=0;f.live.screen='Do you want to proceed?\n❯ 1. Yes\n  2. No';
+ await expect(f.backend.submitText(undefined,'w1:p1','yes',true)).rejects.toMatchObject({status:409});expect(sends()).toEqual([]);
+ // Herdr notices the question between our snapshot and agent.prompt: it refuses before writing, so type it.
+ f.calls.length=0;f.live.status='idle';f.live.promptBlocked=true;f.live.screen='Pick one\n› 1. A\n  2. None of the above';
+ await f.backend.submitText(undefined,'w1:p1','B',true);
+ expect(sends().map(c=>c.method)).toEqual(['agent.prompt','pane.send_input','pane.send_input']);expect(sends()[1].params.text).toBe('B');
 });
