@@ -48,7 +48,7 @@ export interface HostBackend {
   /** Exact pseudo-terminal size of a pane, so remote views can match the computer instead of cropping it. */
   paneSize?(session: string | undefined, paneId: string): Promise<{ cols: number; rows: number }>;
   submitText(session: string | undefined, paneId: string, text: string, submit: boolean, expectedIdentityToken?: string): Promise<unknown>;
-  mutate(kind: "workspace.create" | "tab.create" | "pane.split" | "pane.close" | "agent.start",
+  mutate(kind: "workspace.create" | "tab.create" | "pane.split" | "pane.close" | "pane.rename" | "agent.start",
          session: string | undefined, body: Record<string, unknown>): Promise<unknown>;
   close(): void;
 }
@@ -58,3 +58,6 @@ export class BackendError extends Error {
     super(message);
   }
 }
+
+/** A pane label: trimmed, at most 60 characters, no control characters; empty clears it. */
+export function paneLabel(value:unknown):string {if(typeof value!=='string'||value.length>240||/[\u0000-\u001f\u007f]/.test(value))throw new BackendError('invalid_argument','Invalid label',400);const label=value.trim();if([...label].length>60)throw new BackendError('invalid_argument','Labels are at most 60 characters',400);return label;}

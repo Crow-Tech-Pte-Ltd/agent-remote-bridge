@@ -5,10 +5,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { rpc } from './rpc';
 import { openTerminal } from './terminal';
 import { ttySize, boundedSize } from './pane-size';
-import { readTranscript, type NativeSession } from './transcripts';
+import { readTranscript, lastMessageAt, type NativeSession } from './transcripts';
 import { discoverSession } from './session-discovery';
 import { HARNESSES, harnessByKind, installedHarnesses } from './harnesses';
-import { BackendError, type HostBackend, type PaneIdentity, type TerminalHandle } from './types';
+import { BackendError, paneLabel, type HostBackend, type PaneIdentity, type TerminalHandle } from './types';
 import { resolveWorkspaceRoot, listWorkspaceFiles, readWorkspaceFile, readWorkspaceGitStatus, readWorkspaceGitDiff, WorkspaceInspectionError } from './workspace-inspection';
 export * from './types';
 export interface HerdrBackendOptions {herdr?:string;session?:string;epoch?:string;configDir?:string;homeDir?:string;socketPath?:string;codexHome?:string;claudeConfigDir?:string;requireAgentBinary?:boolean;agentExecutable?:(kind:string)=>string|null}
@@ -29,6 +29,39 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   const primary=options.session??(configured&&dirname(dirname(configured)).endsWith('/sessions')?dirname(configured).split('/').at(-1):undefined)??'default';
   const epoch=options.epoch??randomUUID(); const handles=new Set<TerminalHandle>();let closed=false;let transcriptActive=0;
   const discovered=new Map<string,{key:string;native:NativeSession|undefined;at:number}>();
+  const discovering=new Set<string>();
+  function transcriptRoots() {
+    const codexHome=options.codexHome??(!options.homeDir?process.env.CODEX_HOME:undefined);
+    const claudeHome=options.claudeConfigDir??(!options.homeDir?process.env.CLAUDE_CONFIG_DIR:undefined);
+    const piSessions=!options.homeDir?process.env.PI_CODING_AGENT_SESSION_DIR:undefined,qwenHome=!options.homeDir?process.env.QWEN_HOME:undefined;
+    return {...(codexHome?{codex:join(codexHome,'sessions')}:{}),...(claudeHome?{claude:join(claudeHome,'projects')}:{}),...(piSessions?{pi:piSessions}:{}),...(qwenHome?{qwen:join(qwenHome,'projects')}:{})};
+  }
+  /** The agent's session log. Herdr's session for a Codex pane is not trusted (see makeIdentity), and Herdr only
+   *  learns a session from the agent's start hook, so others are looked for on disk. The search walks the agent's
+   *  whole log folder, so the answer is kept while the same processes, title and claims hold. Snapshots pass
+   *  `wait` false: a miss starts the search in the background (two at a time) and the snapshot goes on without it. */
+  async function nativeFor(name:string,state:any,p:any,proc:any,identityToken:string,wait:boolean):Promise<NativeSession|undefined> {
+    if(p.agent!=='codex'&&p.agent_session)return p.agent_session as NativeSession;
+    if(!p.agent)return;
+    const paneId=p.pane_id,cwd=p.foreground_cwd||p.cwd,roots=transcriptRoots();
+    const processes=(proc?.foreground_processes??[]).map((x:any)=>({pid:x.pid,name:x.name,cwd:x.cwd,argv:Array.isArray(x.argv)?x.argv:undefined}));
+    const claimed=new Set<string>(state.panes.filter((x:any)=>x.agent!=='codex').map((x:any)=>x.agent_session?.value).filter(Boolean));
+    const sharedFolder=state.panes.some((x:any)=>x.pane_id!==paneId&&x.agent===p.agent&&(x.agent==='codex'||!x.agent_session)&&(x.foreground_cwd||x.cwd)===cwd);
+    const title=typeof p.terminal_title_stripped==='string'?p.terminal_title_stripped:undefined;
+    // Codex animates a spinner in front of the title while it works; only the name itself counts.
+    const key=JSON.stringify([identityToken,processes.map((x:any)=>[x.pid,x.cwd??null]),title?.replace(/^[^\p{L}\p{N}]+/u,'')??null,cwd,[...claimed].sort(),sharedFolder]);
+    const id=`${name}\0${paneId}`,cached=discovered.get(id);
+    if(cached&&cached.key===key&&(cached.native||Date.now()-cached.at<(wait?10_000:60_000)))return cached.native;
+    const run=async()=>{
+      const native=await discoverSession(p.agent,processes,{codex:roots.codex??join(home,'.codex/sessions'),claude:roots.claude??join(home,'.claude/projects')},
+        {claimed,sharedFolder,title,screen:async()=>{const r=await call(name,'pane.read',{pane_id:paneId,source:'recent_unwrapped',format:'text',lines:400});return String((r.read??r).text??'');}});
+      if(discovered.size>=256)discovered.clear();
+      discovered.set(id,{key,native,at:Date.now()});return native;
+    };
+    if(wait)return run();
+    if(discovering.size<2&&!discovering.has(id)){discovering.add(id);run().catch(()=>{}).finally(()=>discovering.delete(id));}
+    return cached?.key===key?cached.native:undefined;
+  }
   function selected(session?:string):string {const name=session||primary;if(!validName(name))throw new BackendError('invalid_session','Invalid session name',400);return name;}
   function socket(session:string):string {return session===primary&&configured?configured:session==='default'?join(configDir,'herdr.sock'):join(configDir,'sessions',session,'herdr.sock');}
   async function call(session:string,method:string,params:Record<string,unknown>={},write=false):Promise<any> {if(closed)throw new BackendError('backend_closed','Backend is closed');return rpc(socket(session),method,params,write);}
@@ -57,7 +90,7 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   const agentExecutable=options.agentExecutable??((command:string)=>installedHarnesses().some(x=>x.command===command));
   // Herdr's agent.start validates its own labels; the phone is offered the ones installed here.
   const startable=()=>HARNESSES.filter(x=>x.herdr&&agentExecutable(x.command)).map(x=>x.kind);
-  const caps=(s:any)=>{const kinds=startable();return {output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:modern(s.version),workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:modern(s.version),agentKinds:kinds.length?kinds:['claude','codex'],agentStartSetupRequired:requireAgentBinary&&!kinds.length};};
+  const caps=(s:any)=>{const kinds=startable();return {output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:modern(s.version),workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:modern(s.version),agentKinds:kinds.length?kinds:['claude','codex'],agentStartSetupRequired:requireAgentBinary&&!kinds.length,paneLabels:true};};
   async function inspect<T>(session:string|undefined,workspaceId:string,paneId:string|undefined,fn:(root:string)=>Promise<T>):Promise<T> {
     try {
       const state=await raw(selected(session));const w=state.workspaces.find((w:any)=>w.workspace_id===workspaceId);
@@ -76,8 +109,10 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
       // Bound parallel OS process discovery. No argv/cmdline is projected to clients.
       for(let start=0;start<state.panes.length;start+=8)projected.push(...await Promise.all(state.panes.slice(start,start+8).map(async(p:any)=>{
         let process:any;try{const r=await call(name,'pane.process_info',{pane_id:p.pane_id});process=r.process_info??r.process??r;}catch{}
-        const w=state.workspaces.find((w:any)=>w.workspace_id===p.workspace_id);
-        return {...makeIdentity(state,p,process),workspaceId:p.workspace_id,workspaceLabel:w?.label??'',workspaceNumber:w?.number??0,tabId:p.tab_id,agent:p.agent??'shell',kind:p.agent?'agent':'shell',status:p.agent_status??'unknown',cwd:p.foreground_cwd||p.cwd||'/',focused:!!p.focused,
+        const w=state.workspaces.find((w:any)=>w.workspace_id===p.workspace_id),identity=makeIdentity(state,p,process);
+        const title=String(p.title||p.terminal_title_stripped||'').replace(/^[^\p{L}\p{N}]+/u,'').trim().slice(0,200);
+        const said=p.agent?await lastMessageAt(home,await nativeFor(name,state,p,process,identity.identityToken,false).catch(()=>undefined),transcriptRoots()).catch(()=>undefined):undefined;
+        return {...identity,...(p.label?{label:String(p.label).slice(0,200)}:{}),...(title?{title}:{}),...(said?{lastMessageAt:said}:{}),workspaceId:p.workspace_id,workspaceLabel:w?.label??'',workspaceNumber:w?.number??0,tabId:p.tab_id,agent:p.agent??'shell',kind:p.agent?'agent':'shell',status:p.agent_status??'unknown',cwd:p.foreground_cwd||p.cwd||'/',focused:!!p.focused,
           ...(p.agent_session?{agentSession:p.agent_session}:{}),...(process?{process:{shellPid:process.shell_pid,foregroundProcessGroupId:process.foreground_process_group_id,foregroundProcesses:(process.foreground_processes??[]).map((p:any)=>({pid:p.pid,name:p.name,cwd:p.cwd}))}}:{})};
       })));
       const names=new Set<string>([primary]);if(await lstat(join(configDir,'herdr.sock')).catch(()=>null))names.add('default');
@@ -105,34 +140,8 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
       if(transcriptActive>=4)throw new BackendError('transcript_busy','Too many transcript reads',429);
       transcriptActive++;
       try {
-        const codexHome=options.codexHome??(!options.homeDir?process.env.CODEX_HOME:undefined);
-        const claudeHome=options.claudeConfigDir??(!options.homeDir?process.env.CLAUDE_CONFIG_DIR:undefined);
-        const piSessions=!options.homeDir?process.env.PI_CODING_AGENT_SESSION_DIR:undefined,qwenHome=!options.homeDir?process.env.QWEN_HOME:undefined;
-        const roots={...(codexHome?{codex:join(codexHome,'sessions')}:{}),...(claudeHome?{claude:join(claudeHome,'projects')}:{}),...(piSessions?{pi:piSessions}:{}),...(qwenHome?{qwen:join(qwenHome,'projects')}:{})};
-        // Herdr's session for a Codex pane is not trusted (see makeIdentity); Codex panes are always looked up.
-        let native=before.p.agent==='codex'?undefined:before.p.agent_session as NativeSession|undefined;
-        // Herdr only learns a session from the agent's start hook; agents started before it was installed,
-        // or through a resume picker, have none, so look for their log here.
-        if(!native&&before.p.agent){
-          const cwd=before.p.foreground_cwd||before.p.cwd;
-          const processes=(before.process?.foreground_processes??[]).map((x:any)=>({pid:x.pid,name:x.name,cwd:x.cwd,argv:Array.isArray(x.argv)?x.argv:undefined}));
-          const claimed=new Set<string>(before.state.panes.filter((x:any)=>x.agent!=='codex').map((x:any)=>x.agent_session?.value).filter(Boolean));
-          const sharedFolder=before.state.panes.some((x:any)=>x.pane_id!==paneId&&x.agent===before.p.agent&&(x.agent==='codex'||!x.agent_session)&&(x.foreground_cwd||x.cwd)===cwd);
-          const title=typeof before.p.terminal_title_stripped==='string'?before.p.terminal_title_stripped:undefined;
-          // The search walks the agent's whole log folder; the phone polls every few seconds, so the answer is
-          // kept while the same processes, title and claims hold (a miss is retried after a short while).
-          // Codex animates a spinner in front of the title while it works; only the name itself counts.
-          const key=JSON.stringify([before.identity.identityToken,processes.map((x:any)=>[x.pid,x.cwd??null]),title?.replace(/^[^\p{L}\p{N}]+/u,'')??null,cwd,[...claimed].sort(),sharedFolder]);
-          const cached=discovered.get(`${name}\0${paneId}`);
-          if(cached&&cached.key===key&&(cached.native||Date.now()-cached.at<10_000))native=cached.native;
-          else {
-            native=await discoverSession(before.p.agent,processes,{codex:roots.codex??join(home,'.codex/sessions'),claude:roots.claude??join(home,'.claude/projects')},
-              {claimed,sharedFolder,title,screen:async()=>{const r=await call(name,'pane.read',{pane_id:paneId,source:'recent_unwrapped',format:'text',lines:400});return String((r.read??r).text??'');}});
-            if(discovered.size>=256)discovered.clear();
-            discovered.set(`${name}\0${paneId}`,{key,native,at:Date.now()});
-          }
-        }
-        const result=await readTranscript(home,native,before.identity.identityToken,cursor,roots,typeof tail==='string'?tail:tail===true);
+        const native=await nativeFor(name,before.state,before.p,before.process,before.identity.identityToken,true);
+        const result=await readTranscript(home,native,before.identity.identityToken,cursor,transcriptRoots(),typeof tail==='string'?tail:tail===true);
         if((await pane(name,paneId)).identity.identityToken!==before.identity.identityToken)throw new BackendError('identity_changed','Pane identity changed during transcript read',409);
         return {paneId,identityToken:before.identity.identityToken,...result};
       }finally{transcriptActive--;}
@@ -191,9 +200,11 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
         if(!p)throw new BackendError('missing_target','Explicit pane target is required',400);
         if(kind==='pane.split'){if(!['right','down'].includes(String(body.direction)))throw new BackendError('invalid_direction','Split must be right or down',400);params={target_pane_id:p.p.pane_id,direction:body.direction,focus:false,...(body.cwd?{cwd:pathArg(body.cwd)}:{})};}
         else if(kind==='pane.close')params={pane_id:p.p.pane_id};
+        else if(kind==='pane.rename')params={pane_id:p.p.pane_id,...(paneLabel(body.label)?{label:paneLabel(body.label)}:{})};
         else {if(!modern(state.version))throw new BackendError('agent_start_unsupported','This Herdr version creates layout in agent.start and cannot safely start in the selected pane',501);params={pane_id:p.p.pane_id,name:string(body.name,'name',32),kind:string(body.kind,'agent kind',32)};const harness=harnessByKind(String(params.kind));if(!harness?.herdr)throw new BackendError('agent_kind_unsupported','Herdr cannot start this agent kind',501);if(!/^[a-z][a-z0-9_-]{0,31}$/.test(String(params.name)))throw new BackendError('invalid_name','Invalid agent name',400);if(requireAgentBinary&&!agentExecutable(harness.command))throw new BackendError('agent_not_installed','Install and configure this agent tool in the coding environment first',501);}
       }
-      return call(name,kind,params,true);
+      try{return await call(name,kind,params,true);}
+      catch(e){if(kind==='pane.rename'&&e instanceof BackendError&&e.status===501)throw new BackendError('pane_labels_unsupported','This Herdr version cannot store pane labels',501);throw e;}
     },
     close(){closed=true;for(const h of handles)h.close();handles.clear();},
   };

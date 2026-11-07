@@ -336,14 +336,15 @@ export function createBridge(options:BridgeOptions) {
               await deadline(lease.handle!.command({type:"terminal.input",bytes,encoding:"base64"}),15_000,true);return {admitted:true};
             }));
           }
-          let kind:"workspace.create"|"tab.create"|"pane.split"|"pane.close"|"agent.start"|undefined;
+          let kind:"workspace.create"|"tab.create"|"pane.split"|"pane.close"|"pane.rename"|"agent.start"|undefined;
           if(url.pathname==="/v1/workspaces" && request.method==="POST"){only(value,["requestId","cwd","label"]);str(value.cwd,4096);if(value.label!==undefined)str(value.label,100);kind="workspace.create";}
           else if(url.pathname==="/v1/tabs" && request.method==="POST"){only(value,["requestId","workspaceId","cwd","label"]);str(value.workspaceId);if(value.cwd!==undefined)str(value.cwd,4096);if(value.label!==undefined)str(value.label,100);kind="tab.create";}
           else if(parts[1]==="panes" && parts.length===4 && parts[3]==="split" && request.method==="POST"){only(value,["requestId","identityToken","direction","cwd"]);str(value.identityToken);if(!["right","down"].includes(str(value.direction)))throw new BridgeError("invalid_request","Invalid split");if(value.cwd!==undefined)str(value.cwd,4096);kind="pane.split";value.paneId=parts[2];}
+          else if(parts[1]==="panes" && parts.length===4 && parts[3]==="label" && request.method==="POST"){only(value,["requestId","label"]);str(value.label,240,0);kind="pane.rename";value.paneId=parts[2];}
           else if(parts[1]==="panes" && parts.length===3 && request.method==="DELETE"){only(value,["requestId","identityToken"]);str(value.identityToken);kind="pane.close";value.paneId=parts[2];}
           else if(url.pathname==="/v1/agents" && request.method==="POST"){only(value,["requestId","paneId","identityToken","kind","name"]);str(value.paneId);str(value.identityToken);str(value.kind,32);str(value.name,100);kind="agent.start";}
           if(kind){const selected=kind;return await mutation(device,value.requestId,{route:url.pathname,session:session??null,body:value},async()=>{
-            const dispatch=async()=>{if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);if(value.paneId)await controls.identity(session,value.paneId as string,value.identityToken as string);if(!state.active(device.id))throw new BridgeError("invalid_credentials","Revoked",401);if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);return deadline(backend.mutate(selected,session,value),15_000,true);};
+            const dispatch=async()=>{if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);if(value.paneId&&value.identityToken!==undefined)await controls.identity(session,value.paneId as string,value.identityToken as string);if(!state.active(device.id))throw new BridgeError("invalid_credentials","Revoked",401);if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);return deadline(backend.mutate(selected,session,value),15_000,true);};
             return value.paneId?controls.serial.run(controls.key(session,value.paneId as string),dispatch):dispatch();
           });}
         }

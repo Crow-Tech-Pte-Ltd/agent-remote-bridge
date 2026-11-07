@@ -119,3 +119,11 @@ test('an agent started in a plain terminal shows its own conversation history',a
   const t:any=await b.transcript(undefined,agent.paneId,undefined,true);
   expect(t.supported).toBe(true);expect(t.messages.map((m:any)=>`${m.role}:${m.text}`)).toEqual(['user:Fix the build','assistant:Fixed.']);
 });
+test('plain terminals keep labels for the life of the bridge and report them in snapshots',async()=>{
+  const f=await fixture(),b=f.make(),pane=await first(b);
+  expect(((await b.snapshot()) as any).capabilities.paneLabels).toBe(true);
+  await b.mutate('pane.rename',undefined,{paneId:pane.paneId,label:' build server '});
+  expect((await first(b)).label).toBe('build server');
+  await expect(b.mutate('pane.rename',undefined,{paneId:pane.paneId,label:'x'.repeat(61)})).rejects.toMatchObject({status:400});
+  await b.mutate('pane.rename',undefined,{paneId:pane.paneId,label:''});expect((await first(b)).label).toBeUndefined();
+});

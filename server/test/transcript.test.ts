@@ -1,7 +1,7 @@
 import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,appendFile,rm,rename,symlink} from 'node:fs/promises';
 import {join} from 'node:path';import {tmpdir} from 'node:os';
-import {readTranscript,normalizeTranscriptRecord} from '../src/backend/transcripts';
+import {readTranscript,normalizeTranscriptRecord,lastMessageAt} from '../src/backend/transcripts';
 const homes:string[]=[];afterEach(async()=>{for(const p of homes.splice(0))await rm(p,{recursive:true,force:true});});
 const ref={source:'herdr:codex',agent:'codex',kind:'id',value:'session-123'};
 const line=(v:any)=>JSON.stringify(v)+'\n';
@@ -61,3 +61,17 @@ test('earlier pages walk back to the session start without gaps or repeats',asyn
  const other:any=await readTranscript(f.home,ref,'other identity',undefined,undefined,a.earlier);expect(other.reset).toBe(true);
  const junk:any=await readTranscript(f.home,ref,'identity',undefined,undefined,'bad');expect(junk.reset).toBe(true);});
 test('a tail that reaches the session start has no earlier page',async()=>{const f=await setup();await writeFile(f.path,line(meta)+line(message('one'))+line(message('two')));const a:any=await readTranscript(f.home,ref,'identity',undefined,undefined,true);expect(a.messages.map((m:any)=>m.text)).toEqual(['one','two']);expect(a.earlier).toBeNull();expect(a.truncated).toBe(false);});
+test('last message time skips trailing tool activity, follows new messages and never escapes the root',async()=>{
+  const f=await setup();const at=(t:string,v:any)=>({...v,timestamp:t});
+  const tool=(t:string)=>at(t,{type:'response_item',payload:{type:'function_call_output',call_id:'c',output:'y'.repeat(5000)}});
+  await writeFile(f.path,line(meta)+line(at('2026-11-07T09:00:00Z',{type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'go'}]}}))
+    +line(at('2026-11-07T09:01:00Z',message('done')))+line(tool('2026-11-07T09:02:00Z'))+line(tool('2026-11-07T09:03:00Z')));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:01:00Z'));
+  await appendFile(f.path,line(at('2026-11-07T09:30:00Z',message('again'))));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:30:00Z'));
+  await appendFile(f.path,line(tool('2026-11-07T09:31:00Z')));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:30:00Z'));
+  expect(await lastMessageAt(f.home,{...ref,value:'../escape'})).toBeUndefined();expect(await lastMessageAt(f.home,undefined)).toBeUndefined();
+  expect(await lastMessageAt(f.home,{...ref,source:'herdr:claude'})).toBeUndefined();
+  const other=join(f.home,'outside.jsonl');await writeFile(other,line(at('2026-11-07T10:00:00Z',message('x'))));expect(await lastMessageAt(f.home,{...ref,kind:'path',value:other})).toBeUndefined();
+});
