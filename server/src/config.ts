@@ -10,7 +10,9 @@ export interface Config {version:1;hostName:string;url:string;listen:string;port
   /** Local web console: on by default, `false` turns it off; `consolePort` defaults to 8790. */
   console?:boolean;consolePort?:number;
   /** A bridge joined to a relay also accepts phones on this network unless this is `false`. */
-  localRoute?:boolean;}
+  localRoute?:boolean;
+  /** Bridge self-updates: auto (default) installs and restarts when idle, notify only tells phones, off never checks. */
+  updates?:'auto'|'notify'|'off';}
 export function endpoint(value:string):URL {
   const url=new URL(value);
   if(url.protocol!=="https:" || url.username || url.password || url.search || url.hash || !["","/"].includes(url.pathname))throw new Error("Endpoint must be a root HTTPS URL without credentials, query, or fragment");

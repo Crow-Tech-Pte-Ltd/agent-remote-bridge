@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { State } from "./state";
 import { loadConfig, certificatePin, type Config } from "./config";
-import { createBridge } from "./app";
+import { createBridge, type BridgeOptions } from "./app";
 import { createHerdrBackend, type HostBackend } from "./backend/index";
 import { createOrcaBackend } from "./backend/orca";
 import { createPlainBackend } from "./backend/plain";
@@ -19,9 +19,11 @@ export interface ServiceFlags {backend?:string;folder?:string[];"orca-connection
 export interface Services {
   state:State;config:Config;bridge:ReturnType<typeof createBridge>;relay?:ReturnType<typeof connectRelay>;
   backend:"herdr"|"orca"|"plain";discoverable:boolean;localRoutes():string[];localRoute:boolean;listen:string;port:number;startedAt:string;close():void;
+  /** Phones connected now, and terminals that end with this bridge (plain backend). */
+  activity():{phones:number;terminals:number};
 }
 const loopback=(address:string)=>["127.0.0.1","localhost","::1"].includes(address);
-export async function startServices(directory:string,v:ServiceFlags,discover:boolean):Promise<Services> {
+export async function startServices(directory:string,v:ServiceFlags,discover:boolean,extras:{updates?:BridgeOptions["updates"]}={}):Promise<Services> {
   const config=loadConfig(directory),relayFile=join(directory,"relay.json"),profile=existsSync(relayFile)?readRelayProfile(relayFile):undefined;
   const state=new State(directory,true),epoch=randomUUID();
   let backend:HostBackend|undefined,notifications:ReturnType<typeof createNotifications>|undefined,bridge:ReturnType<typeof createBridge>|undefined;
@@ -44,7 +46,7 @@ export async function startServices(directory:string,v:ServiceFlags,discover:boo
       ...(discover?{nearby:{scope:config.nearbyScope??"control",announce:request=>announce(herdr,pin,request)}}:{}),
       ...(profile?{relay:{gateway:profile.phone.gateway,credentials:()=>relaySupportsCredentials}}:{}),
       certificate:()=>certificateStatus(loadConfig(directory),state.hostId),
-      ...(!loopback(listen)?{localRoutes:()=>localRoutes()}:{})});
+      ...(!loopback(listen)?{localRoutes:()=>localRoutes()}:{}),...(extras.updates?{updates:extras.updates}:{})});
     const relay=profile&&bridge.relayServer?connectRelay({profile,target:{host:"127.0.0.1",port:bridge.relayServer.port!},log:event=>console.error(JSON.stringify(event)),
       credentials:()=>state.relayDigests(),onHello:revision=>{relaySupportsCredentials=revision>=2;state.setMetadata("relayRevision",String(revision));}}):undefined;
     const advertisement=discover?advertise({url:config.url,hostId:state.hostId,certificateSHA256:pin,name:config.hostName,port:bridge.server.port??port,pairing:discover},message=>console.error(message)):undefined;
@@ -52,6 +54,7 @@ export async function startServices(directory:string,v:ServiceFlags,discover:boo
     if(discover && process.stderr.isTTY)console.error(`\nReady. Open AI Agent Remote on your phone on the same Wi-Fi: ${config.hostName} appears under Nearby.\nWhen you tap Pair, a 6-digit code pops up on this computer. Press Ctrl-C to stop.`);
     const created=bridge;
     return {state,config,bridge:created,relay,backend:kind,discoverable:discover,localRoutes,localRoute,listen,port:created.server.port??port,startedAt:new Date().toISOString(),
+      activity:()=>({phones:created.activity(),terminals:backend?.liveTerminals?.()??0}),
       close(){relay?.close();advertisement?.close();closeAll();}};
   }catch(error){closeAll();throw error;}
 }

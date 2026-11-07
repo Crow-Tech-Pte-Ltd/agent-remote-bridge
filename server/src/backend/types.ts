@@ -32,6 +32,8 @@ export interface TranscriptMessage {
 }
 
 export interface HostBackend {
+  /** Terminals this bridge itself runs (plain backend): they end when the bridge restarts. */
+  liveTerminals?(): number;
   snapshot(session?: string): Promise<Record<string, unknown>>;
   identity(session: string | undefined, paneId: string): Promise<PaneIdentity>;
   output(session: string | undefined, paneId: string, lines?: number): Promise<Record<string, unknown>>;

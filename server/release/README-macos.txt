@@ -38,6 +38,8 @@ No Herdr? Start it with plain terminals instead:
 Keep it running while you want to use the phone (and keep the Mac awake). Ctrl+C stops it.
 
 Useful:
+  ./herdr-remote update                  install the newest version now (the bridge also updates
+                                         itself: --mode notify to only be told, --mode off to stop)
   ./herdr-remote devices                 list paired phones
   ./herdr-remote revoke --device UUID    unpair one
   ./herdr-remote up --no-discovery       serve already-paired phones without advertising

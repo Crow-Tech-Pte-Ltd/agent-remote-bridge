@@ -38,6 +38,8 @@ To keep it running in the background, see herdr-remote.service in this folder:
   (edit ExecStart to this folder) then: systemctl --user enable --now herdr-remote
 
 Useful:
+  ./herdr-remote update                  install the newest version now (the bridge also updates
+                                         itself: --mode notify to only be told, --mode off to stop)
   ./herdr-remote devices                 list paired phones
   ./herdr-remote revoke --device UUID    unpair one
   ./herdr-remote up --no-discovery       serve already-paired phones without advertising

@@ -5,7 +5,8 @@ import { chmodSync, readFileSync, writeFileSync, unlinkSync, existsSync, lstatSy
 import { parseArgs } from "node:util";
 import QRCode from "qrcode";
 import { State, privateDirectory } from "./state";
-import { initialize, loadConfig, certificatePin } from "./config";
+import { initialize, loadConfig, saveConfig, certificatePin } from "./config";
+import { createUpdater, detectInstall, installRelease, latestRelease, mode as updateMode, newer, type UpdateMode } from "./updates";
 import { loadOrcaConnection } from "./backend/orca/connection";
 import { randomUUID } from "node:crypto";
 import { connectionProfile, type HostConnection } from "./connection";
@@ -17,7 +18,7 @@ import { certificateStatus, maintainCertificate, renewCertificate, switchCertifi
 process.umask(0o077);
 // Release builds stamp their version with --define HERDR_REMOTE_VERSION='"x.y.z"'.
 declare const HERDR_REMOTE_VERSION:string|undefined;
-const version=typeof HERDR_REMOTE_VERSION==="string"?HERDR_REMOTE_VERSION:"0.1.0";
+const stamped=typeof HERDR_REMOTE_VERSION==="string",version=stamped?HERDR_REMOTE_VERSION:"0.1.0";
 const usage=`Herdr Remote host ${version}
   herdr-remote up [--port 8443] [--name NAME] [--no-discovery] [--backend herdr|orca|plain]
       One step for a computer on your Wi-Fi: creates TLS material on first run, then serves
@@ -34,6 +35,10 @@ const usage=`Herdr Remote host ${version}
   herdr-remote revoke --device UUID
   herdr-remote console              print a one-time link to the running bridge's local web console
       (serve/up open it in the browser on a desktop; --no-console or "console": false turns it off)
+  herdr-remote update [--check] [--mode auto|notify|off]   install the newest release the way this copy was
+      installed (install script, Homebrew or an unzipped kit; never with sudo) and restart the running bridge
+      into it. --check only reports. auto (default): the bridge installs new releases itself and restarts once
+      no phone has been connected for 2 minutes; notify: it only tells phones; off: it never checks.
   herdr-remote certificate [renew [--days N]]   show expiry, or create a successor that paired phones
       pick up automatically and switch to it after N days (default 14, at the latest a day before expiry)
 Reach this computer from anywhere through a relay you run (it dials out; no inbound port):
@@ -50,7 +55,7 @@ Pairing output contains a short-lived secret. Share it only with the device owne
 The bridge renews its certificate 30 days before expiry; phones that connect before the switch keep working.`;
 export async function main(args=process.argv.slice(2)) {
   const parsed=parseArgs({args,allowPositionals:true,strict:true,options:{
-    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},
+    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},check:{type:"boolean"},mode:{type:"string"},
   }});
   let command=parsed.positionals[0];const v=parsed.values;
   if(v.backend&&!['herdr','orca','plain'].includes(v.backend))throw new Error("--backend must be herdr, orca or plain");
@@ -99,6 +104,7 @@ export async function main(args=process.argv.slice(2)) {
     }
     command="serve";discover=!v["no-discovery"];
   }
+  if(command==="update"){await update(directory,v);return;}
   const config=loadConfig(directory);
   if(command==="console"){console.log(consoleLaunchURL(directory,config.consolePort??8790));return;}
   if(command==="certificate") {
@@ -114,7 +120,7 @@ export async function main(args=process.argv.slice(2)) {
   }
   if(command==="serve") {
     discover=discover || !!v.discoverable || (!!config.discoverable && !v["no-discovery"]);
-    privateDirectory(directory);const lock=join(directory,"serve.lock"),lockValue=JSON.stringify({pid:process.pid,nonce:randomUUID()});
+    privateDirectory(directory);const lock=join(directory,"serve.lock"),lockValue=JSON.stringify({pid:process.pid,nonce:randomUUID(),version,restartSignal:"SIGUSR2"});
     if(existsSync(lock)) {
       let alive=true;
       try{const previous=JSON.parse(readFileSync(lock,"utf8")) as {pid:number};if(!Number.isInteger(previous.pid))throw new Error("Invalid process lock");try{process.kill(previous.pid,0);}catch(error){if((error as NodeJS.ErrnoException).code==="ESRCH")alive=false;}}
@@ -129,23 +135,43 @@ export async function main(args=process.argv.slice(2)) {
     // A setting saved in the console replaces the command-line flag that set it; other flags stay.
     const flagFor:Record<string,(keyof typeof flags)[]>={backend:["backend"],herdr:["herdr"],session:["session"],listen:["listen"],port:["port"],localRoute:["no-local-route"]};
     const saved=(keys:string[])=>{for(const key of keys){for(const flag of flagFor[key]??[])delete flags[flag];if(key==="discoverable")discovering=!!loadConfig(directory).discoverable;}};
-    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering);};
-    const shutdown=()=>{if(stopping)return;stopping=true;clearInterval(certificateCheck);console_?.close();running?.close();unlock();};
+    // Self-updates: a phone, the console, the schedule or `herdr-remote update` (SIGUSR2) restart this process
+    // into the new binary in place (same PID), so launchd, systemd or the terminal running it carry on.
+    const updater=createUpdater({version,install:detectInstall({stamped}),
+      mode:()=>{try{return updateMode(loadConfig(directory).updates);}catch{return "auto";}},
+      setMode:value=>saveConfig(directory,{...loadConfig(directory),updates:value}),
+      activity:()=>running?.activity()??{phones:0,terminals:0},
+      restart:async target=>{
+        console.error(`Restarting the bridge into ${target}`);
+        console_?.close();console_=undefined;running?.close();running=undefined;unlock();
+        try{if(!process.execve)throw new Error("this runtime can't replace itself");process.execve(target,[target,...args],{...process.env,AGENT_REMOTE_RESTARTED:"1"});}
+        catch(error){
+          console.error(`Couldn't restart into the new bridge (${error instanceof Error?error.message:"unknown"}); still running ${version}.`);
+          writeFileSync(lock,lockValue,{mode:0o600});running=await startServices(directory,flags,discovering,{updates});openConsole();throw error;
+        }
+      }});
+    const updates={status:updater.status,update:updater.update,setMode:(value:"auto"|"notify")=>updater.setMode(value)};
+    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});};
+    const shutdown=()=>{if(stopping)return;stopping=true;clearInterval(certificateCheck);updater.close();console_?.close();running?.close();unlock();};
     const certificateCheck=setInterval(()=>{void (async()=>{
       try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,message=>console.error(message))&&switchCertificate(current)){console.error("Switched to the renewed bridge certificate.");await restart();}}catch(error){console.error(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
     })();},6*3_600_000);certificateCheck.unref();
     process.once("SIGINT",()=>{shutdown();process.exit(0);});process.once("SIGTERM",()=>{shutdown();process.exit(0);});
     process.once("exit",()=>{shutdown();});
+    process.on("SIGUSR2",()=>{void updater.restartIntoInstalled();});
+    const openConsole=()=>{
+      if(v["no-console"]||loadConfig(directory).console===false)return;
+      console_=startConsole({directory,port:config.consolePort??8790,services:()=>running,restart,saved,version,updates,
+        effective:()=>Object.fromEntries(Object.entries({backend:flags.backend,herdr:flags.herdr,session:flags.session,listen:flags.listen,port:flags.port?Number(flags.port):undefined}).filter(([,value])=>value!==undefined))});
+    };
     try {
       const probe=new State(directory,false),hostId=probe.hostId;probe.close();
       if(await maintainCertificate(config,hostId,message=>console.error(message)))switchCertificate(config);
-      running=await startServices(directory,flags,discovering);
-      if(!v["no-console"]&&config.console!==false) {
-        console_=startConsole({directory,port:config.consolePort??8790,services:()=>running,restart,saved,version,
-          effective:()=>Object.fromEntries(Object.entries({backend:flags.backend,herdr:flags.herdr,session:flags.session,listen:flags.listen,port:flags.port?Number(flags.port):undefined}).filter(([,value])=>value!==undefined))});
-        const url=console_.launchURL();
-        if(process.stderr.isTTY){console.error(`Console: ${url}`);openBrowser(url,directory);}
-      }
+      running=await startServices(directory,flags,discovering,{updates});
+      openConsole();
+      // A restart into an update keeps the terminal; don't open another browser tab for it.
+      if(console_&&process.stderr.isTTY&&!process.env.AGENT_REMOTE_RESTARTED){const url=console_.launchURL();console.error(`Console: ${url}`);openBrowser(url,directory);}
+      updater.start();
     }catch(error){shutdown();throw error;}
     return;
   }
@@ -171,6 +197,47 @@ export async function main(args=process.argv.slice(2)) {
     else if(command==="revoke") {if(!v.device)throw new Error("revoke requires --device UUID");console.log(JSON.stringify({revoked:state.revoke(v.device),deviceId:v.device}));}
     else throw new Error("Unknown command. Use --help.");
   }finally{state.close();}
+}
+/** `herdr-remote update`: report, set the policy, or install the newest release and restart the running bridge. */
+async function update(directory:string,v:{check?:boolean;mode?:string}) {
+  const hasConfig=existsSync(join(directory,"config.json"));
+  if(v.mode!==undefined) {
+    if(!["auto","notify","off"].includes(v.mode))throw new Error("--mode must be auto, notify or off");
+    if(!hasConfig)throw new Error(`No bridge state in ${directory}. Run init or up first, or pass --state.`);
+    saveConfig(directory,{...loadConfig(directory),updates:v.mode as UpdateMode});
+    console.log(JSON.stringify({mode:v.mode,next:v.mode==="off"?"the bridge no longer checks for updates":"the running bridge uses it at its next check"}));return;
+  }
+  const install=detectInstall({stamped});
+  let latest:string|undefined,problem:string|undefined;
+  if(install.method!=="source"){try{latest=await latestRelease();}catch(error){problem=error instanceof Error?error.message:"Couldn't check for updates";}}
+  const report={version,method:install.method,mode:hasConfig?updateMode(loadConfig(directory).updates):"auto",latest:latest??null,
+    available:!!latest&&newer(latest,version),canInstall:install.canInstall,...(install.manual?{manual:install.manual}:{}),...(problem?{error:problem}:{})};
+  if(v.check){console.log(JSON.stringify(report,null,2));return;}
+  if(!install.canInstall)throw new Error(install.manual??"This bridge can't update itself");
+  if(!latest)throw new Error(problem??"Couldn't check for updates");
+  let to=version;
+  if(report.available){console.error(`Updating the bridge from ${version} to ${latest}…`);await installRelease(install,latest,{log:message=>console.error(message)});to=latest;}
+  else console.error(`This bridge (${version}) is the newest release.`);
+  console.log(JSON.stringify({updated:report.available,from:version,to,method:install.method,running:await restartRunning(directory,to)}));
+}
+/**
+ * Ask a bridge serving this state folder to restart into `to`. Only bridges that advertise the signal in their
+ * lock get it: SIGUSR2's default action would stop an older bridge.
+ */
+async function restartRunning(directory:string,to:string):Promise<string> {
+  const lock=join(directory,"serve.lock");
+  let held:{pid?:number;nonce?:string;version?:string;restartSignal?:string};
+  try{held=JSON.parse(readFileSync(lock,"utf8"));}catch{return "not running";}
+  if(!Number.isInteger(held.pid))return "not running";
+  try{process.kill(held.pid!,0);}catch{return "not running";}
+  if(held.version&&!newer(to,held.version))return `already running ${held.version}`;
+  if(held.restartSignal!=="SIGUSR2")return "restart the running bridge to finish (it is older than 0.1.30)";
+  process.kill(held.pid!,"SIGUSR2");
+  for(let i=0;i<60;i++) {
+    await Bun.sleep(500);
+    try{const next=JSON.parse(readFileSync(lock,"utf8"));if(next.nonce!==held.nonce)return `restarted into ${next.version??to}`;}catch{}
+  }
+  return "asked the running bridge to restart; check its log";
 }
 function summary(status:ReturnType<typeof certificateStatus>) {return {pin:status.pin,expiresAt:status.expiresAt,...(status.next?{next:{pin:status.next.pin,switchAt:status.next.switchAt}}:{})};}
 if(import.meta.main) main().catch(error=>{

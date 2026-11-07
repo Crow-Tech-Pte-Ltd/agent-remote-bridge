@@ -7,6 +7,7 @@ import { BridgeError, failure } from "./errors";
 import { State, hash, canonical } from "./state";
 import type { Device, Scope } from "./state";
 import type { GatewayConnection } from "./connection";
+import type { BridgeRelease } from "./updates";
 
 const MAX_BODY=65_536, MAX_RESPONSE=2_097_152, MAX_FILE_RESPONSE=8_388_608;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -70,6 +71,8 @@ export interface BridgeOptions {
   localRoutes?:()=>string[];
   /** The serving certificate, and its signed successor while a renewal is pending. */
   certificate?:()=>CertificateStatus;
+  /** Bridge self-updates: status for snapshots, and the phone's Update now / automatic toggle. */
+  updates?:{status():BridgeRelease;update():Promise<BridgeRelease>;setMode(mode:"auto"|"notify"):BridgeRelease};
 }
 export interface CertificateStatus {pin:string;expiresAt:string;next?:{pin:string;switchAt:string;statement:string;signature:string;previousCertificate:string};}
 interface NearbyRequest {id:string;name:string;code:string;expires:number;attempts:number;ip:string}
@@ -287,7 +290,7 @@ export function createBridge(options:BridgeOptions) {
         }
         const parts=url.pathname.split("/").filter(Boolean).map(part=>{try{return str(decodeURIComponent(part));}catch{throw new BridgeError("invalid_request","Malformed path");}});
         if(request.method==="GET") {
-          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{})},...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
+          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{}),...(options.updates?{bridgeUpdates:true}:{})},...(options.updates?{bridgeRelease:options.updates.status()}:{}),...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
           if(parts[1]==="operations" && parts.length===3){if(!UUID.test(parts[2]!))throw new BridgeError("invalid_request","Invalid operation ID");return reply(state.operation(device.id,parts[2]!));}
           if(parts[1]==="panes" && parts.length===4){
             if(parts[3]==="output"){const lines=url.searchParams.has("lines")?integer(Number(url.searchParams.get("lines")),1,2000):240;return reply(await deadline(backend.output(session,parts[2]!,lines)));}
@@ -335,6 +338,15 @@ export function createBridge(options:BridgeOptions) {
               if(value.text!==undefined)return deadline(backend.submitText(session,parts[2]!,value.text as string,value.submit===true,token),15_000,true);
               await deadline(lease.handle!.command({type:"terminal.input",bytes,encoding:"base64"}),15_000,true);return {admitted:true};
             }));
+          }
+          if(url.pathname==="/v1/bridge/update" && request.method==="POST") {
+            only(value,["requestId"]);const updates=options.updates;if(!updates)throw new BridgeError("unsupported","Updates unavailable",501);
+            return await mutation(device,value.requestId,{route:url.pathname,body:value},()=>updates.update());
+          }
+          if(url.pathname==="/v1/bridge/update-mode" && request.method==="POST") {
+            only(value,["requestId","mode"]);const updates=options.updates;if(!updates)throw new BridgeError("unsupported","Updates unavailable",501);
+            if(value.mode!=="auto"&&value.mode!=="notify")throw new BridgeError("invalid_request","Mode must be auto or notify");
+            const selected=value.mode;return await mutation(device,value.requestId,{route:url.pathname,body:value},async()=>updates.setMode(selected));
           }
           let kind:"workspace.create"|"tab.create"|"pane.split"|"pane.close"|"pane.rename"|"agent.start"|undefined;
           if(url.pathname==="/v1/workspaces" && request.method==="POST"){only(value,["requestId","cwd","label"]);str(value.cwd,4096);if(value.label!==undefined)str(value.label,100);kind="workspace.create";}
@@ -423,6 +435,8 @@ export function createBridge(options:BridgeOptions) {
     if(++tick%2===0)void followPaneSizes();else void watchSnapshots();
   },1000);sweep.unref();
   return {server,relayServer,controls,epoch,
+    /** Phones connected right now (live sockets and control leases), for restarts that wait until nobody is here. */
+    activity(){return sockets.size+controls.leases.size;},
     revoke(device:string){state.revoke(device);controls.revoke(device);for(const ws of sockets)if(ws.data.device.id===device){clearStream(ws);ws.close(4001,"Device revoked");}},
     close(){if(stopped)return;stopped=true;clearInterval(sweep);clearInterval(identitySweep);controls.close();for(const ws of sockets)ws.close(1001,"Server shutdown");backend.close();server.stop(true);relayServer?.stop(true);},
   };
