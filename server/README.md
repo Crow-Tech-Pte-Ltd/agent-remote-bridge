@@ -73,6 +73,17 @@ Terminal text, base64 bytes, and allowlisted logical keys are distinct input for
 
 The per-device budget is 2,400 authenticated HTTP requests and 1,200 writes per minute, accommodating normal keyboard input. Pairing and unauthenticated attempts retain separate strict limits. Requests are limited to 64 KiB, responses to 2 MiB (8 MiB exclusively for authenticated file preview, with four concurrent file requests), and WebSocket client messages to 16 KiB. Active stream identities are independently rechecked every two seconds, with bounded parallelism; changed or unavailable identities close their streams and leases. File/Git readers apply additional containment, symlink, resource, subprocess and repository configuration protections. A control credential nevertheless has the host user's terminal authority; workspaces do not sandbox arbitrary commands. Default server logs contain lifecycle metadata, not tokens, invitations, prompts or file contents. Supported transcript readers expose published messages/tool activity, not hidden reasoning.
 
+## Updates
+
+`herdr-remote update` installs the newest release the way this copy was installed: the install script's `~/.local/share/agent-remote-bridge`, Homebrew (`brew upgrade agent-remote-bridge`), or an unzipped kit in a folder you can write. It then restarts the running bridge into it. The process stays the same, so launchd, systemd or the terminal running it carry on, and phones reconnect by themselves. It never uses `sudo`. A copy in a folder that needs administrator rights, a container or a source checkout tells you what to run instead. `herdr-remote update --check` only reports.
+
+By default a running bridge also updates itself:
+- It checks GitHub a few minutes after starting, then about every 6 hours.
+- It installs a new release in the background.
+- It restarts once no phone has been connected for 2 minutes. With plain terminals it doesn't restart while any are open, because they would close.
+
+Phones with control access see the update and can start it ("Update now"). The local console shows it too. `herdr-remote update --mode notify` only tells phones; `--mode off` stops checking. The same setting is `"updates"` in `config.json`. Every kit is checked against the release's `SHA256SUMS`, and the new binary must report the expected version before it replaces anything.
+
 ## Build and verify
 
 ```sh

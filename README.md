@@ -32,6 +32,21 @@ Kits for manual download are on the [releases page](https://github.com/gremia-te
 Then run `herdr-remote up` (below). A local web console opens in your browser to change settings,
 pair phones and manage the relay (`--no-console` turns it off).
 
+## Updating
+
+From 0.1.30 the bridge keeps itself up to date:
+- It checks this repository's releases a few minutes after starting, then about every 6 hours.
+- It installs a new release the way it was installed (install script, Homebrew or an unzipped kit in a folder you can write; never with sudo).
+- It restarts into it once no phone has been connected for 2 minutes. The process stays the same, so launchd, systemd or your terminal carry on, and phones reconnect by themselves.
+
+To control it:
+- `herdr-remote update` installs the newest release now and restarts the running bridge.
+- `herdr-remote update --check` only reports.
+- `herdr-remote update --mode notify` only tells phones; `--mode off` stops checking.
+- Phones with control access show the update, can start it, and can turn automatic updates off.
+
+Bridges older than 0.1.30 need one manual update: run the install script again, or `brew upgrade agent-remote-bridge`.
+
 ## Quick start (same Wi-Fi)
 
 Requires Herdr, OpenSSL and [Bun](https://bun.sh) 1.3.9+ (on Linux also `avahi-utils`

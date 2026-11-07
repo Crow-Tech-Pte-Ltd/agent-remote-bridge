@@ -18,7 +18,8 @@ function safeMessage(code: string) {
     identity_changed:"The pane has changed. Refresh before continuing.", control_conflict:"This pane already has a controller. Explicit takeover is required.",
     lease_expired:"Control expired. Acquire control again.", request_conflict:"This request ID was already used with different content.",
     request_too_large:"The request exceeds the size limit.", response_too_large:"The response exceeds the size limit.", rate_limited:"Too many requests. Try again later.",
-    unsupported:"This host does not support this operation.", journal_full:"The operation journal is full. Pair a new device to continue.",
+    unsupported:"This host does not support this operation.", no_update:"The bridge is already up to date.",
+    update_unsupported:"This bridge can't update itself. Update it on the computer.", journal_full:"The operation journal is full. Pair a new device to continue.",
     host_unavailable:"The host is unavailable.", invalid_code:"That code does not match the one shown on the computer.", delivery_unknown:"Delivery is uncertain. Check operation status before taking further action.",
   };
   return messages[code] ?? "The host could not complete this request.";

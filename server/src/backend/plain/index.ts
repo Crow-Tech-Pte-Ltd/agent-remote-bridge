@@ -151,6 +151,7 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
   }
 
   const backend:HostBackend={
+    liveTerminals:()=>panes.size,
     async snapshot(session) {
       checkSession(session);readForeground();
       const rows=await Promise.all([...panes.values()].filter(p=>!p.exited).map(async p=>{const w=workspaces.get(p.workspaceId)!;const i=identity(p);

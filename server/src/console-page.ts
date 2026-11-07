@@ -43,6 +43,8 @@ td,th{text-align:left;padding:7px 4px;border-top:1px solid var(--line);vertical-
 <section class="wide"><h2>Devices</h2><div class="table"><table><thead><tr><th>Name</th><th>Access</th><th>Paired</th><th></th></tr></thead><tbody id="devices"></tbody></table></div></section>
 <section><h2>Settings <span class="muted" style="font-weight:400;font-size:12px">saved to config.json</span></h2><form id="settings"></form></section>
 <section><h2>Relay</h2><div id="relay"></div></section>
+<section><h2>Updates</h2><dl id="updates"></dl><div class="row" style="margin-top:12px"><button id="update-now">Update now</button></div>
+ <p class="muted" id="update-note"></p></section>
 <section><h2>Certificate</h2><dl id="certificate"></dl><div class="row" style="margin-top:12px"><button id="renew">Renew now</button></div>
  <p class="muted">Paired phones pick up the new certificate the next time they connect and keep working after the switch. Renewal also happens automatically 30 days before expiry.</p></section>
 </main></div>
@@ -71,6 +73,12 @@ async function load(){
     ["Relay",r?(r.connected?"Connected to "+r.host:"Not connected ("+(r.lastError||"retrying")+")"):"Not joined",r?(r.connected?"ok":"bad"):""],
     ["Relay admission",r&&r.connected?(r.revision>=2?(r.sharedPhoneToken?"Per-device credentials, shared token still accepted":"Per-device credentials only"):"Shared token (update the relay for per-device credentials)"):undefined],
     ["Relay activity",r&&r.connected?(r.admitted+" phone connections, "+r.rejected+" rejected"+(r.replaced?", replaced "+r.replaced+" times":"")):undefined,r&&r.replaced?"warn":""]]);
+  const u=s.update||{};lastUpdate=u;
+  rows("updates",[["Version",u.version||s.version],["Newest",u.latest?(u.available?u.latest+" available":"Up to date"):(u.method==="source"?"Runs from source":u.error||"Not checked yet"),u.available?"warn":u.latest?"ok":""],
+    ["Installed with",{kit:"Install script",homebrew:"Homebrew",standalone:"Unzipped kit",container:"Container",source:"Source checkout"}[u.method]],
+    ["Status",u.state&&u.state!=="idle"?u.state.replace("_"," ")+(u.error?": "+u.error:""):undefined,u.state==="failed"||u.state==="restart_needed"?"bad":""]]);
+  $("update-now").disabled=!(u.available&&u.canInstall)||["downloading","installing","restarting"].includes(u.state);
+  $("update-note").textContent=u.manual||(u.mode==="notify"?"Phones are told about new versions. Install them here or from a phone.":u.mode==="off"?"Update checks are off (Settings).":"New versions install by themselves. The bridge restarts once no phone has been connected for 2 minutes.");
   const cert=s.certificate||{};
   rows("certificate",[["Fingerprint",cert.pin&&cert.pin.slice(0,4)+"-"+cert.pin.slice(4,8)+"…"],["Expires",cert.expiresAt&&when(cert.expiresAt)+" ("+days(cert.expiresAt)+" days)",cert.expiresAt?(days(cert.expiresAt)<30?"warn":"ok"):""],["Successor",cert.next&&("ready, switches "+when(cert.next.switchAt))]]);
   const tbody=$("devices");tbody.replaceChildren();
@@ -104,6 +112,7 @@ function renderSettings(c){
   field(f,"localRoute","When joined to a relay, also accept paired phones on this network",c.localRoute!==false,"check");
   field(f,"console","Open this console when the bridge starts",c.console!==false,"check");
   field(f,"consolePort","Console port",c.consolePort||8790,"number");
+  field(f,"updates","Bridge updates",c.updates||"auto","select",[["auto","Install automatically"],["notify","Tell me, install when I choose"],["off","Don't check"]]);
   const save=el("button",{className:"primary",type:"submit",textContent:"Save"}),restart=el("button",{type:"button",id:"restart-btn",textContent:"Restart bridge now"});
   restart.addEventListener("click",doRestart);f.append(el("div",{className:"row"},save,restart));renderRestart();
 }
@@ -132,6 +141,8 @@ $("pair").addEventListener("click",async()=>{
     setTimeout(()=>$("qr").replaceChildren(),Date.parse(v.expiresAt)-Date.now());
   }catch(e){notice(e.message,true);}
 });
+let lastUpdate={};
+$("update-now").addEventListener("click",async()=>{if(!confirm("Update the bridge now? Phones lose the connection for a few seconds while it restarts, then reconnect by themselves."+(lastUpdate.closesTerminals?" The terminals this bridge started will close.":"")))return;try{await api("update","POST");notice("Updating. The bridge restarts when the new version is installed.");setTimeout(load,3000);}catch(e){notice(e.message,true);}});
 $("renew").addEventListener("click",async()=>{if(!confirm("Create a new certificate? Phones switch to it automatically when they next connect within 14 days; phones that don't connect in that time must pair again."))return;try{await api("certificate/renew","POST",{days:14});notice("Successor certificate created.");load();}catch(e){notice(e.message,true);}});
 $("refresh").addEventListener("click",()=>load().catch(e=>notice(e.message,true)));
 (async()=>{

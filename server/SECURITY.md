@@ -15,6 +15,12 @@ The bridge gives a paired phone the same power over your terminals as you have a
 
 The bridge runs as your user, and anyone who controls your account controls it, as with SSH. A phone with control access is equivalent to a shell as you. Keep phones locked and revoke lost ones.
 
+## Updates
+
+Self-updates trust the same things as the install script and Homebrew: GitHub's TLS and the checksums published with each release. Whoever can publish releases on `gremia-tech/agent-remote-bridge` can ship code to bridges that update automatically. Run `herdr-remote update --mode notify` (or `off`) if you'd rather review releases first.
+
+The bridge downloads only from GitHub's release hosts and never installs an older version. It replaces itself only with a kit whose checksum matches and whose binary runs and reports the expected version. It never uses administrator rights. Starting an update from a phone needs control access, which already allows running any command as you.
+
 ## Known limits
 
 - Device tokens are bearer secrets sent inside the pinned TLS on each request; device-bound keys that never leave the phone's secure hardware are planned.

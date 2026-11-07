@@ -14,6 +14,7 @@ import { connectionProfile, type HostConnection } from "./connection";
 import { certificateStatus, renewCertificate } from "./certificate";
 import type { Services } from "./services";
 import { consolePage } from "./console-page";
+import type { BridgeRelease } from "./updates";
 
 const LAUNCH_SECONDS=120,SESSION_MS=12*3_600_000,MAX_BODY=16_384;
 const launchFile=(directory:string)=>join(directory,"console-launch.json"),portFile=(directory:string)=>join(directory,"console.json");
@@ -42,7 +43,9 @@ function json(value:unknown,status=200,headers:Record<string,string>={}) {
 class ConsoleError extends Error {constructor(readonly status:number,message:string){super(message);}}
 const fail=(status:number,message:string)=>{throw new ConsoleError(status,message);};
 interface Session {csrf:string;expires:number}
-export interface ConsoleOptions {directory:string;port:number;services:()=>Services|undefined;restart:()=>Promise<void>;saved?:(keys:string[])=>void;effective?:()=>Partial<Config>;version:string}
+export interface ConsoleOptions {directory:string;port:number;services:()=>Services|undefined;restart:()=>Promise<void>;saved?:(keys:string[])=>void;effective?:()=>Partial<Config>;version:string;
+  /** Bridge self-updates (serve only): status, and Update now. */
+  updates?:{status():BridgeRelease;update():Promise<BridgeRelease>}}
 export function startConsole(options:ConsoleOptions) {
   const {directory}=options,sessions=new Map<string,Session>();
   let failures=0,failureWindow=Date.now(),server:ReturnType<typeof Bun.serve>|undefined;
@@ -97,6 +100,10 @@ export function startConsole(options:ConsoleOptions) {
       return json({saved:true,restartRequired:true});
     }
     if(url.pathname==="/api/restart"&&request.method==="POST"){await options.restart();return json({restarted:true});}
+    if(url.pathname==="/api/update"&&request.method==="POST") {
+      if(!options.updates)return fail(501,"Updates are not available here");
+      try{return json(await options.updates.update());}catch(error){return fail(409,error instanceof Error?error.message:"The update failed");}
+    }
     if(url.pathname==="/api/devices"&&!write)return json(running().state.devices().map(({id,name,scope,createdAt,revokedAt})=>({id,name,scope,createdAt,revokedAt})));
     if(parts[1]==="devices"&&parts.length===4&&request.method==="POST") {
       const id=parts[2]!;if(!/^[0-9a-f-]{36}$/.test(id))fail(400,"Invalid device");
@@ -124,7 +131,7 @@ export function startConsole(options:ConsoleOptions) {
     const services=options.services(),config=loadConfig(directory),relayFile=join(directory,"relay.json");
     let relayHost:string|undefined;try{if(existsSync(relayFile))relayHost=new URL(readRelayProfile(relayFile).host.url).host;}catch{}
     const certificate=services?certificateStatus(config,services.state.hostId):undefined;
-    return {version:options.version,running:!!services,
+    return {version:options.version,running:!!services,update:options.updates?.status(),
       bridge:services?{hostId:services.state.hostId,hostName:config.hostName,url:config.url,listen:services.listen,port:services.port,backend:services.backend,discoverable:services.discoverable,localRoute:services.localRoute,startedAt:services.startedAt,
         localAddresses:services.localRoutes(),devices:services.state.devices().filter(d=>!d.revokedAt).length}:undefined,
       relay:relayHost?{host:relayHost,...(services?.relay?.status??{connected:false})}:undefined,
@@ -142,18 +149,19 @@ export function startConsole(options:ConsoleOptions) {
   }
   return {port,launchURL:()=>consoleLaunchURL(directory,port),close(){server?.stop(true);try{unlinkSync(portFile(directory));}catch{}}};
 }
-const EDITABLE=["hostName","listen","port","backend","herdr","session","discoverable","nearbyScope","localRoute","console","consolePort"] as const;
+const EDITABLE=["hostName","listen","port","backend","herdr","session","discoverable","nearbyScope","localRoute","console","consolePort","updates"] as const;
 function editable(config:Config){return Object.fromEntries(EDITABLE.map(key=>[key,config[key]??null]));}
 /** Only known fields, each validated; the rest of the config (paths, URL, keys) is not editable here. */
 function merge(config:Config,value:Record<string,unknown>):Config {
   if(Object.keys(value).some(key=>!(EDITABLE as readonly string[]).includes(key)))fail(400,"Unknown setting");
   const next={...config} as Record<string,unknown>,text=(v:unknown,max=200)=>typeof v==="string"&&v.trim().length>0&&v.length<=max&&!/[\0\r\n]/.test(v);
   for(const [key,v] of Object.entries(value)) {
-    if(v===null){if(["session","discoverable","nearbyScope","localRoute","console","consolePort"].includes(key)){delete next[key];continue;}fail(400,`${key} cannot be empty`);}
+    if(v===null){if(["session","discoverable","nearbyScope","localRoute","console","consolePort","updates"].includes(key)){delete next[key];continue;}fail(400,`${key} cannot be empty`);}
     if(key==="port"||key==="consolePort"){if(!Number.isInteger(v)||(v as number)<1||(v as number)>65535)fail(400,`${key} must be a TCP port`);}
     else if(key==="listen"){if(typeof v!=="string"||!/^(\d{1,3}(\.\d{1,3}){3}|::|::1|localhost)$/.test(v))fail(400,"Listen address must be an IP address, :: or localhost");}
     else if(key==="backend"){if(!["herdr","orca","plain"].includes(v as string))fail(400,"Unknown backend");if(v==="orca"&&!config.orcaConnection)fail(400,"Set up Orca with init --orca-connection first");}
     else if(key==="nearbyScope"){if(v!=="read"&&v!=="control")fail(400,"Nearby scope must be read or control");}
+    else if(key==="updates"){if(!["auto","notify","off"].includes(v as string))fail(400,"Updates must be auto, notify or off");}
     else if(["discoverable","localRoute","console"].includes(key)){if(typeof v!=="boolean")fail(400,`${key} must be true or false`);}
     else if(!text(v))fail(400,`Invalid ${key}`);
     next[key]=v;
