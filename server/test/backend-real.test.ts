@@ -30,5 +30,10 @@ test.skipIf(process.env.HERDR_REAL_TEST!=='1')('isolated installed Herdr shell o
   await expect(backend.terminal({paneId,control:true,takeover:false,cols:80,rows:24,onFrame:()=>{},onClose:r=>bClosed=r})).rejects.toMatchObject({status:409});
   expect(bClosed).not.toBe('');expect(aClosed).toBe('');expect(closeReason).toBe('');
   snapshot=await backend.snapshot();expect(snapshot.shellPanes.some((p:any)=>p.paneId===paneId)).toBe(true);
+  // Labels are Herdr's own pane labels: set, read back in the snapshot, cleared.
+  await backend.mutate('pane.rename',undefined,{paneId,label:' isolated label '});
+  snapshot=await backend.snapshot();expect(snapshot.shellPanes.find((p:any)=>p.paneId===paneId)?.label).toBe('isolated label');
+  await backend.mutate('pane.rename',undefined,{paneId,label:''});
+  snapshot=await backend.snapshot();expect(snapshot.shellPanes.find((p:any)=>p.paneId===paneId)?.label).toBeUndefined();
  } finally {for(const h of helpers)h.close();backend.close();const stop=Bun.spawn([herdr,'server','stop'],{env,stdout:'ignore',stderr:'ignore'});await stop.exited;await server.exited;await rm(dir,{recursive:true,force:true});}
 },20000);

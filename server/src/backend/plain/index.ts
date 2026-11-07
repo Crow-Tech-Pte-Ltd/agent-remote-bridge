@@ -4,11 +4,11 @@ import {homedir} from 'node:os';
 import {basename,isAbsolute,join,resolve} from 'node:path';
 import {Terminal as Screen} from '@xterm/headless';
 import {SerializeAddon} from '@xterm/addon-serialize';
-import {BackendError,type HostBackend,type PaneIdentity,type TerminalFrame,type TerminalHandle} from '../types';
+import {BackendError,paneLabel,type HostBackend,type PaneIdentity,type TerminalFrame,type TerminalHandle} from '../types';
 import {resolveWorkspaceRoot,listWorkspaceFiles,readWorkspaceFile,readWorkspaceGitStatus,readWorkspaceGitDiff,WorkspaceInspectionError} from '../workspace-inspection';
 import {harnessByKind,harnessFor,installedHarnesses,type Harness} from '../harnesses';
 import {discoverSession,processCwd} from '../session-discovery';
-import {readTranscript,type NativeSession} from '../transcripts';
+import {readTranscript,lastMessageAt,type NativeSession} from '../transcripts';
 
 /** Plain terminals: the bridge runs its own shells, no Herdr or Orca needed. Workspaces are folders
  *  the owner chose (saved in the state directory); terminals live as long as the bridge does. */
@@ -17,7 +17,7 @@ interface Workspace {id:string;number:number;label:string;cwd:string}
 interface Tab {id:string;workspaceId:string;number:number;label:string}
 interface Viewer {control:boolean;emit(frame:Omit<TerminalFrame,'paneId'|'identityToken'|'type'>):void;close(reason:string):void}
 interface Pane {id:string;tabId:string;workspaceId:string;proc:Bun.Subprocess;screen:Screen;serializer:SerializeAddon;
-  cols:number;rows:number;seq:number;viewers:Set<Viewer>;controller?:Viewer;foreground?:{pgid:number;harness?:Harness;agent?:{pid:number;name:string;argv:string[]}};session?:{pid:number;title?:string;native:NativeSession};title?:string;exited:boolean}
+  cols:number;rows:number;seq:number;viewers:Set<Viewer>;controller?:Viewer;foreground?:{pgid:number;harness?:Harness;agent?:{pid:number;name:string;argv:string[]}};session?:{pid:number;title?:string;native:NativeSession};title?:string;label?:string;exited:boolean}
 const sha=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const text=(value:unknown,name:string,max=4096):string=>{if(typeof value!=='string'||!value||value.length>max||value.includes('\0'))throw new BackendError('invalid_argument',`Invalid ${name}`,400);return value;};
 const SCROLLBACK=5000;
@@ -129,14 +129,36 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
   const env=options.env??process.env;const codexHome=env.CODEX_HOME??join(env.HOME??homedir(),'.codex'),claudeHome=env.CLAUDE_CONFIG_DIR??join(env.HOME??homedir(),'.claude');
   const available=()=>installedHarnesses((options.env??process.env).PATH,(options.env??process.env).HOME??homedir()).map(x=>x.kind);
 
-  return {
+  const roots=()=>({codex:join(codexHome,'sessions'),claude:join(claudeHome,'projects')});
+  /** The agent's own log, found on this computer the same way as for Herdr panes without a session reference.
+   *  Codex retitles its terminal when another thread is resumed in the same process. */
+  async function discover(p:Pane) {
+    const agent=p.foreground?.agent,kind=p.foreground?.harness?.kind;
+    if(!agent||!kind||(p.session?.pid===agent.pid&&p.session.title===p.title))return;
+    const cwd=await processCwd(agent.pid);
+    const others=[...panes.values()].filter(o=>o!==p&&o.foreground?.harness?.kind===kind);
+    const native=await discoverSession(kind,[{...agent,...(cwd?{cwd}:{})}],roots(),
+      {claimed:new Set(others.map(o=>o.session?.native.value).filter((v):v is string=>!!v)),sharedFolder:(await Promise.all(others.map(o=>o.foreground?.agent?processCwd(o.foreground.agent.pid):undefined))).includes(cwd),title:p.title,
+       screen:async()=>String(((await backend.output('default',p.id,400)) as {text?:string}).text??"")});
+    p.session=native?{pid:agent.pid,title:p.title,native}:undefined;
+  }
+  const searching=new Set<string>();
+  /** For snapshots: the last message time when the log is known, and a background search (two at a time) when not. */
+  async function said(p:Pane) {
+    const agent=p.foreground?.agent;if(!agent)return;
+    if(p.session?.pid===agent.pid&&p.session.title===p.title)return lastMessageAt(env.HOME??homedir(),p.session.native,roots()).catch(()=>undefined);
+    if(searching.size<2&&!searching.has(p.id)){searching.add(p.id);discover(p).catch(()=>{}).finally(()=>searching.delete(p.id));}
+  }
+
+  const backend:HostBackend={
     async snapshot(session) {
       checkSession(session);readForeground();
-      const rows=[...panes.values()].filter(p=>!p.exited).map(p=>{const w=workspaces.get(p.workspaceId)!;const i=identity(p);
-        return {...i,workspaceId:w.id,workspaceLabel:w.label,workspaceNumber:w.number,tabId:p.tabId,kind:i.agent==='shell'?'shell':'agent',cwd:w.cwd,focused:false};});
+      const rows=await Promise.all([...panes.values()].filter(p=>!p.exited).map(async p=>{const w=workspaces.get(p.workspaceId)!;const i=identity(p);
+        const title=(p.title??'').replace(/^[^\p{L}\p{N}]+/u,'').trim().slice(0,200),at=await said(p);
+        return {...i,...(p.label?{label:p.label}:{}),...(title?{title}:{}),...(at?{lastMessageAt:at}:{}),workspaceId:w.id,workspaceLabel:w.label,workspaceNumber:w.number,tabId:p.tabId,kind:i.agent==='shell'?'shell':'agent',cwd:w.cwd,focused:false};}));
       const agents=rows.filter(r=>r.kind==='agent');
       return {bridge:'connected',backend:{kind:'plain',name:'Terminals',version:null,controlScope:'bridge'},session:'default',epoch,
-        capabilities:{output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:true,workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:true,agentKinds:available()},
+        capabilities:{output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:true,workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:true,agentKinds:available(),paneLabels:true},
         agents,shellPanes:rows.filter(r=>r.kind==='shell'),
         workspaces:[...workspaces.values()].map(w=>({workspaceId:w.id,number:w.number,label:w.label,focused:false,tabCount:[...tabs.values()].filter(t=>t.workspaceId===w.id).length,paneCount:rows.filter(r=>r.workspaceId===w.id).length})),
         tabs:[...tabs.values()].map(t=>({tabId:t.id,workspaceId:t.workspaceId,number:t.number,label:t.label,focused:false,paneCount:rows.filter(r=>r.tabId===t.id).length})),
@@ -154,19 +176,9 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
     },
     async transcript(session,id,cursor,tail) {
       checkSession(session);const p=pane(id);readForeground();const token=identity(p).identityToken;
-      const agent=p.foreground?.agent,kind=p.foreground?.harness?.kind;
-      // The agent's own log, found on this computer the same way as for Herdr panes without a session reference.
-      // Codex retitles its terminal when another thread is resumed in the same process.
-      if(agent&&kind&&(p.session?.pid!==agent.pid||p.session.title!==p.title)){
-        const cwd=await processCwd(agent.pid);
-        const others=[...panes.values()].filter(o=>o!==p&&o.foreground?.harness?.kind===kind);
-        const native=await discoverSession(kind,[{...agent,...(cwd?{cwd}:{})}],{codex:join(codexHome,'sessions'),claude:join(claudeHome,'projects')},
-          {claimed:new Set(others.map(o=>o.session?.native.value).filter((v):v is string=>!!v)),sharedFolder:(await Promise.all(others.map(o=>o.foreground?.agent?processCwd(o.foreground.agent.pid):undefined))).includes(cwd),title:p.title,
-           screen:async()=>String(((await this.output(session,id,400)) as {text?:string}).text??"")});
-        p.session=native?{pid:agent.pid,title:p.title,native}:undefined;
-      }
+      await discover(p);const agent=p.foreground?.agent;
       if(!agent||!p.session)return {paneId:p.id,identityToken:token,source:'plain-terminal',supported:false,reason:'native_session_unavailable',messages:[],cursor:null,reset:!!cursor,truncated:false,hasMore:false};
-      return {paneId:p.id,identityToken:token,...await readTranscript(env.HOME??homedir(),p.session.native,token,cursor,{codex:join(codexHome,'sessions'),claude:join(claudeHome,'projects')},typeof tail==='string'?tail:tail===true)};
+      return {paneId:p.id,identityToken:token,...await readTranscript(env.HOME??homedir(),p.session.native,token,cursor,roots(),typeof tail==='string'?tail:tail===true)};
     },
     git:(s,w,p)=>inspect(s,w,p,root=>readWorkspaceGitStatus(w,root)) as Promise<any>,
     diff:(s,w,path,p)=>inspect(s,w,p,root=>readWorkspaceGitDiff(w,root,path)) as Promise<any>,
@@ -216,6 +228,7 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
       checkSession(session);
       if(kind==='workspace.create'){const cwd=folder(text(body.cwd,'cwd'));const w=addWorkspace(cwd,typeof body.label==='string'?text(body.label,'label',100):undefined);const p=spawnPane(addTab(w),cwd);save();return {workspace:{workspaceId:w.id},pane:{paneId:p.id}};}
       if(kind==='tab.create'){const w=workspaces.get(text(body.workspaceId,'workspaceId',128));if(!w)throw new BackendError('workspace_not_found','Workspace not found',404);const cwd=body.cwd?folder(text(body.cwd,'cwd')):w.cwd;const t=addTab(w,typeof body.label==='string'?text(body.label,'label',100):undefined);const p=spawnPane(t,cwd);return {tab:{tabId:t.id},pane:{paneId:p.id}};}
+      if(kind==='pane.rename'){const p=pane(body.paneId),label=paneLabel(body.label);p.label=label||undefined;return {pane:{paneId:p.id,label:p.label??null}};}
       const p=pane(body.paneId,text(body.identityToken,'identityToken',128));
       if(kind==='pane.split'){if(!['right','down'].includes(String(body.direction)))throw new BackendError('invalid_direction','Split must be right or down',400);const n=spawnPane(tabs.get(p.tabId)!,body.cwd?folder(text(body.cwd,'cwd')):workspaces.get(p.workspaceId)!.cwd);return {pane:{paneId:n.id}};}
       if(kind==='pane.close'){closePane(p,'pane_closed');return {closed:true};}
@@ -227,4 +240,5 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
     },
     close() {stopped=true;for(const p of [...panes.values()])closePane(p,'backend_closed');},
   };
+  return backend;
 }

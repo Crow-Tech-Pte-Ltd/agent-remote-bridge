@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open, readdir, realpath, lstat } from 'node:fs/promises';
+import { open, readdir, realpath, lstat, stat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { TranscriptMessage } from './types';
@@ -124,6 +124,34 @@ export type TranscriptRoots=Partial<Record<keyof typeof STORAGE,string>>;
 interface Cursor {v:1;binding:string;file:string;offset:number;prefix:string;drop?:boolean}
 /** Marks where a page read backwards began, so the next page back ends there. The prefix hash proves the log before it is unchanged. */
 interface Earlier {v:1;binding:string;file:string;before:number;prefix:string}
+const located=new Map<string,{path:string|null;at:number}>(),spokenAt=new Map<string,{size:number;mtime:number;at?:number}>();
+/** When the user or the agent last said something in this session (Unix ms), read from the end of its log; tool
+ *  output doesn't count. Cached by the log's size and mtime, so a quiet session costs one stat per snapshot. */
+export async function lastMessageAt(home:string,native:NativeSession|undefined,roots?:TranscriptRoots):Promise<number|undefined> {
+  if(!native||!(native.agent in STORAGE)||native.source!==`herdr:${native.agent}`)return;
+  const root=roots?.[native.agent as keyof typeof STORAGE]??join(home,STORAGE[native.agent as keyof typeof STORAGE]);
+  const ref=`${root}\0${native.kind}\0${native.value}`;let hit=located.get(ref);
+  if(!hit||(!hit.path&&Date.now()-hit.at>30_000)){hit={path:await locate(root,native),at:Date.now()};if(located.size>=512)located.clear();located.set(ref,hit);}
+  if(!hit.path)return;
+  const info=await stat(hit.path).catch(()=>null);
+  if(!info?.isFile()){located.delete(ref);return;}
+  const cached=spokenAt.get(hit.path);
+  if(cached&&cached.size===info.size&&cached.mtime===info.mtimeMs)return cached.at;
+  let at=cached?.at;
+  const handle=await open(hit.path,constants.O_RDONLY|constants.O_NOFOLLOW).catch(()=>null);
+  if(handle)try {
+    const length=Math.min(info.size,1024*1024),buf=Buffer.alloc(length);
+    const {bytesRead}=await handle.read(buf,0,length,info.size-length);
+    const lines=buf.subarray(0,bytesRead).toString('utf8').split('\n');if(info.size>length)lines.shift();
+    for(let i=lines.length-1;i>=0;i--) {
+      let row:any;try{row=JSON.parse(lines[i]!);}catch{continue;}
+      const said=normalizeTranscriptRecord(native.agent,row,'tail').find(spoken),time=said?.timestamp?Date.parse(said.timestamp):NaN;
+      if(Number.isFinite(time)){at=time;break;}
+    }
+  }finally{await handle.close();}
+  if(spokenAt.size>=512)spokenAt.clear();spokenAt.set(hit.path,{size:info.size,mtime:info.mtimeMs,at});
+  return at;
+}
 /** `tail` (without a cursor) starts from the newest records instead of the session start; a string is an
  *  `earlier` value from a previous tail page and reads the page before it. */
 export async function readTranscript(home:string, native:NativeSession|undefined, identityToken:string,cursor?:string,roots?:TranscriptRoots,tail:boolean|string=false):Promise<Record<string,unknown>> {

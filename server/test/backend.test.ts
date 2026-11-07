@@ -8,11 +8,11 @@ import {terminalArgs} from '../src/backend/terminal';
 import {readWorkspaceFile,resolveWorkspaceRoot} from '../src/backend/workspace-inspection';
 const clean:Array<()=>Promise<any>>=[];afterEach(async()=>{for(const f of clean.splice(0))await f();});
 async function fake(version='0.7.4',extra:Partial<import('../src/backend').HerdrBackendOptions>={}) {
- const dir=await mkdtemp(join(tmpdir(),'herdr-backend-'));let calls:any[]=[];let fg=1;const live={status:'idle',screen:'hello',promptBlocked:false};
+ const dir=await mkdtemp(join(tmpdir(),'herdr-backend-'));let calls:any[]=[];let fg=1;const live={status:'idle',screen:'hello',promptBlocked:false,panes:[] as any[],renameUnsupported:false};
  const server=createServer(s=>{let buf='';s.on('data',d=>{buf+=d.toString();if(!buf.includes('\n'))return;const r=JSON.parse(buf.split('\n')[0]!);calls.push(r);let result:any;
- if(r.method==='session.snapshot')result={snapshot:{version,protocol:16,workspaces:[{workspace_id:'w1',number:1,label:'Demo',active_tab_id:'w1:t1',pane_count:1,tab_count:1}],tabs:[{tab_id:'w1:t1',workspace_id:'w1',number:1,label:'Main',pane_count:1}],panes:[{pane_id:'w1:p1',terminal_id:'uuid',workspace_id:'w1',tab_id:'w1:t1',agent:'codex',agent_status:live.status,revision:5,cwd:dir,agent_session:{source:'herdr:codex',agent:'codex',kind:'id',value:'abc'}}]}};
+ if(r.method==='session.snapshot')result={snapshot:{version,protocol:16,workspaces:[{workspace_id:'w1',number:1,label:'Demo',active_tab_id:'w1:t1',pane_count:1,tab_count:1}],tabs:[{tab_id:'w1:t1',workspace_id:'w1',number:1,label:'Main',pane_count:1}],panes:[{pane_id:'w1:p1',terminal_id:'uuid',workspace_id:'w1',tab_id:'w1:t1',agent:'codex',agent_status:live.status,revision:5,cwd:dir,agent_session:{source:'herdr:codex',agent:'codex',kind:'id',value:'abc'}},...live.panes]}};
  else if(r.method==='pane.process_info')result={process_info:{shell_pid:1,foreground_process_group_id:fg,foreground_processes:[{pid:fg,name:'codex',argv:['SECRET']}]}};
- else if(r.method==='pane.read')result={text:live.screen,revision:6,truncated:false};else if(r.method==='agent.prompt'&&live.promptBlocked){s.end(JSON.stringify({id:r.id,error:{code:'agent_blocked',message:'agent is blocked'}})+'\n');return;}else result={accepted:true};s.end(JSON.stringify({id:r.id,result})+'\n');});});
+ else if(r.method==='pane.read')result={text:live.screen,revision:6,truncated:false};else if(r.method==='pane.rename'&&live.renameUnsupported){s.end(JSON.stringify({id:r.id,error:{code:'unknown_method',message:'unknown method'}})+'\n');return;}else if(r.method==='agent.prompt'&&live.promptBlocked){s.end(JSON.stringify({id:r.id,error:{code:'agent_blocked',message:'agent is blocked'}})+'\n');return;}else result={accepted:true};s.end(JSON.stringify({id:r.id,result})+'\n');});});
  await new Promise<void>(resolve=>server.listen(join(dir,'herdr.sock'),resolve));
  clean.push(async()=>{await new Promise<void>(r=>server.close(()=>r()));await rm(dir,{recursive:true,force:true});});
  return {dir,calls,live,setFg:(v:number)=>fg=v,backend:createHerdrBackend({configDir:dir,socketPath:join(dir,'herdr.sock'),epoch:'test',...extra})};
@@ -55,4 +55,26 @@ test('a blocked agent gets message-box text typed like keystrokes, never on an a
  f.calls.length=0;f.live.status='idle';f.live.promptBlocked=true;f.live.screen='Pick one\n› 1. A\n  2. None of the above';
  await f.backend.submitText(undefined,'w1:p1','B',true);
  expect(sends().map(c=>c.method)).toEqual(['agent.prompt','pane.send_input','pane.send_input']);expect(sends()[1].params.text).toBe('B');
+});
+test('snapshots carry the pane label, a spinner-free title and when the conversation last spoke',async()=>{
+  const f=await fake('0.9.5',{claudeConfigDir:''}),logs=join(f.dir,'claude','projects','-work');await mkdir(logs,{recursive:true});
+  const row=(o:any)=>JSON.stringify({sessionId:'sess-1',...o})+'\n';
+  await writeFile(join(logs,'sess-1.jsonl'),row({type:'user',timestamp:'2026-11-07T10:00:00Z',message:{role:'user',content:'fix the login bug'}})
+    +row({type:'assistant',timestamp:'2026-11-07T10:05:00Z',message:{role:'assistant',content:[{type:'text',text:'Fixed.'},{type:'tool_use',id:'t1',name:'Bash',input:{command:'bun test'}}]}})
+    +row({type:'user',timestamp:'2026-11-07T10:09:00Z',message:{role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'ok'}]}}));
+  f.live.panes.push({pane_id:'w1:p2',terminal_id:'t2',workspace_id:'w1',tab_id:'w1:t1',agent:'claude',agent_status:'done',revision:1,cwd:f.dir,label:'login bug',terminal_title_stripped:'⠋ Fix login flow',agent_session:{source:'herdr:claude',agent:'claude',kind:'id',value:'sess-1'}});
+  const backend=createHerdrBackend({configDir:f.dir,socketPath:join(f.dir,'herdr.sock'),epoch:'test',claudeConfigDir:join(f.dir,'claude')});
+  const s:any=await backend.snapshot(),pane=s.agents.find((p:any)=>p.paneId==='w1:p2');
+  expect(pane.label).toBe('login bug');expect(pane.title).toBe('Fix login flow');expect(pane.lastMessageAt).toBe(Date.parse('2026-11-07T10:05:00Z'));
+  expect(s.capabilities.paneLabels).toBe(true);expect(s.agents.find((p:any)=>p.paneId==='w1:p1').lastMessageAt).toBeUndefined();
+});
+test('labels are set, trimmed and cleared through Herdr pane.rename; bad labels and old Herdr are refused',async()=>{
+  const f=await fake('0.9.5');
+  await f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'  login bug  '});expect(f.calls.at(-1)).toMatchObject({method:'pane.rename',params:{pane_id:'w1:p1',label:'login bug'}});
+  await f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:''});expect(f.calls.at(-1).params).toEqual({pane_id:'w1:p1'});
+  const before=f.calls.length;
+  await expect(f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'a\nb'})).rejects.toMatchObject({status:400});
+  await expect(f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'x'.repeat(61)})).rejects.toMatchObject({status:400});
+  expect(f.calls.slice(before).some(c=>c.method==='pane.rename')).toBe(false);
+  f.live.renameUnsupported=true;await expect(f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'x'})).rejects.toMatchObject({status:501,code:'pane_labels_unsupported'});
 });

@@ -111,6 +111,14 @@ describe("durable mutation admission",()=>{
     expect((await f.request("/v1/panes/p/split",a.token,"POST",{requestId:randomUUID(),identityToken:"old",direction:"right"})).status).toBe(409);expect(f.backend.mutated).toBe(0);
     const response=await f.request("/v1/panes/p/split",a.token,"POST",{requestId:randomUUID(),identityToken:"identity-1",direction:"down"});expect(response.status).toBe(200);expect((await response.json() as any).state).toBe("accepted");expect(f.backend.mutated).toBe(1);
   });
+  test("pane labels need control scope and no identity token; other fields and long labels are refused",async()=>{
+    const f=fixture(),read=f.device("read"),a=f.device();
+    expect((await f.request("/v1/panes/p/label",read.token,"POST",{requestId:randomUUID(),label:"login bug"})).status).toBe(403);
+    expect((await f.request("/v1/panes/p/label",a.token,"POST",{requestId:randomUUID(),label:"x",identityToken:"identity-1"})).status).toBe(400);
+    expect((await f.request("/v1/panes/p/label",a.token,"POST",{requestId:randomUUID(),label:"x".repeat(241)})).status).toBe(400);expect(f.backend.mutated).toBe(0);
+    expect((await f.request("/v1/panes/p/label",a.token,"POST",{requestId:randomUUID(),label:"login bug"})).status).toBe(200);
+    expect((await f.request("/v1/panes/p/label",a.token,"POST",{requestId:randomUUID(),label:""})).status).toBe(200);expect(f.backend.mutated).toBe(2);
+  });
 });
 test("real HTTPS enrollment uses a hostname-valid certificate and correct full-leaf fingerprint",async()=>{
   const dir=directory(),config=await initialize(dir,{url:"https://localhost:8443",sans:["127.0.0.1"]}),state=new State(dir),backend=new MockBackend();
