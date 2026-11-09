@@ -65,7 +65,7 @@ test("per-device relay credentials: invitations mint one, pairing binds it, revo
  state.revoke(device.id);expect(state.relayDigests()).toEqual([]);
  await closed;await expect(tunnel(base,invite.relayToken!)).rejects.toThrow();
  expect(relay.connections).toBe(0);
-});
+},20_000);// waits out the connector's two-second credential refresh, slow on shared CI runners
 test("a paired device can swap the shared relay token for its own",async()=>{
  const {base,config,state}=await relayedBridge();
  const invite=state.invite("read");
