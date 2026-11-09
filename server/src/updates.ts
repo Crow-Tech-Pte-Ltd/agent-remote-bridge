@@ -14,7 +14,7 @@ export interface Install {method:InstallMethod;executable:string;canInstall:bool
 export interface BridgeRelease {version:string;method:InstallMethod;mode:UpdateMode;latest:string|null;available:boolean;canInstall:boolean;manual:string|null;
   state:UpdateState;error:string|null;checkedAt:string|null;notesURL:string|null;closesTerminals:boolean}
 
-export const RELEASES="https://github.com/gremia-tech/agent-remote-bridge";
+export const RELEASES="https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge";
 const FORMULA="agent-remote-bridge",KIT_ROOT=()=>join(homedir(),".local/share/agent-remote-bridge");
 /** The command is agent-remote; herdr-remote is its earlier name, still linked for scripts and services that use it. */
 export const COMMAND="agent-remote",LEGACY_COMMAND="herdr-remote";
@@ -36,7 +36,7 @@ export function detectInstall(options:{stamped:boolean;executable?:string;home?:
   const executable=options.executable??process.execPath;
   if(!options.stamped)return {method:"source",executable,canInstall:false,manual:"This bridge runs from source. Update it with git pull in its checkout, then restart it."};
   if(options.container??(existsSync("/.dockerenv")||existsSync("/run/.containerenv")))
-    return {method:"container",executable,canInstall:false,manual:"This bridge runs in a container. Pull the new image (ghcr.io/gremia-tech/agent-remote-bridge) and recreate the container."};
+    return {method:"container",executable,canInstall:false,manual:"This bridge runs in a container. Pull the new image (ghcr.io/crow-tech-pte-ltd/agent-remote-bridge) and recreate the container."};
   let real=executable;try{real=realpathSync(executable);}catch{}
   const brew=/^(.*)\/Cellar\/agent-remote-bridge\/[^/]+\//.exec(real);
   if(brew) {
@@ -51,7 +51,7 @@ export function detectInstall(options:{stamped:boolean;executable?:string;home?:
       ...(writable(root)?{}:{manual:`${root} is not writable by this user. Reinstall with the install script.`})};
   if(writable(dirname(real))&&writable(real))return {method:"standalone",executable:real,canInstall:true};
   return {method:"standalone",executable:real,canInstall:false,
-    manual:"This bridge is in a folder this user can't change without administrator rights. Reinstall it with the install script (curl -fsSL https://raw.githubusercontent.com/gremia-tech/agent-remote-bridge/main/install.sh | sh), or replace it yourself."};
+    manual:"This bridge is in a folder this user can't change without administrator rights. Reinstall it with the install script (curl -fsSL https://raw.githubusercontent.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/main/install.sh | sh), or replace it yourself."};
 }
 
 /** `macos-arm64`, `linux-x64`… for this computer, or undefined where no kit is published. */

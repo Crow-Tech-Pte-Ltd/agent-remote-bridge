@@ -7,7 +7,7 @@
 # shell's PATH if it isn't there. AGENT_REMOTE_VERSION=0.1.N installs a specific release;
 # AGENT_REMOTE_NO_MODIFY_PATH=1 leaves your shell files alone.
 set -eu
-repo="gremia-tech/agent-remote-bridge"
+repo="Crow-Tech-Pte-Ltd/agent-remote-bridge"
 fail() { printf 'agent-remote install: %s\n' "$1" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "$1 is required"; }
 need curl; need uname

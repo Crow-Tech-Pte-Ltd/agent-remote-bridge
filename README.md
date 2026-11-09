@@ -19,7 +19,7 @@ copy of [`install.sh`](install.sh) from this repository (the *Publish installer*
 in sync); the kits themselves come from this repository's GitHub Releases. Or use Homebrew:
 
 ```sh
-brew tap gremia-tech/agent-remote-bridge https://github.com/gremia-tech/agent-remote-bridge
+brew tap crow-tech-pte-ltd/agent-remote-bridge https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge
 brew install agent-remote-bridge
 ```
 
@@ -27,10 +27,10 @@ or the container image (Linux x86-64/ARM64), handy for running a relay:
 
 ```sh
 docker run -d --name agent-remote-relay -p 8788:8788 -v agent-remote-relay:/state \
-  ghcr.io/gremia-tech/agent-remote-bridge relay serve --listen 0.0.0.0 --state /state
+  ghcr.io/crow-tech-pte-ltd/agent-remote-bridge relay serve --listen 0.0.0.0 --state /state
 ```
 
-Kits for manual download are on the [releases page](https://github.com/gremia-tech/agent-remote-bridge/releases).
+Kits for manual download are on the [releases page](https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases).
 Then run `herdr-remote up` (below). A local web console opens in your browser to change settings,
 pair phones and manage the relay (`--no-console` turns it off).
 
@@ -48,6 +48,11 @@ To control it:
 - Phones with control access show the update, can start it, and can turn automatic updates off.
 
 Bridges older than 0.1.30 need one manual update: run the install script again, or `brew upgrade agent-remote-bridge`.
+
+This repository moved from `gremia-tech/agent-remote-bridge` on 9 November 2026 (that one is
+archived). Bridges 0.1.30 to 0.1.32 still check the old repository; 0.1.33 was published there
+too, so they update once and then check here. If you tapped the old repository with Homebrew,
+switch taps: `brew untap gremia-tech/agent-remote-bridge`, then tap this one as above.
 
 ## Quick start (same Wi-Fi)
 

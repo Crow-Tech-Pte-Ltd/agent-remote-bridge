@@ -103,7 +103,7 @@ jobs:
           } > notes.md
           gh release create "$tag" dist/*.zip dist/SHA256SUMS --target "$GITHUB_SHA" --title "Bridge $VERSION" --notes-file notes.md
 
-  # Container image of the released Linux kits: ghcr.io/gremia-tech/agent-remote-bridge:VERSION and :latest.
+  # Container image of the released Linux kits: ghcr.io/crow-tech-pte-ltd/agent-remote-bridge:VERSION and :latest.
   container:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [test, release]
@@ -127,12 +127,12 @@ jobs:
           build-args: VERSION=${{ needs.test.outputs.version }}
           push: true
           tags: |
-            ghcr.io/gremia-tech/agent-remote-bridge:${{ needs.test.outputs.version }}
-            ghcr.io/gremia-tech/agent-remote-bridge:latest
-      - run: docker run --rm "ghcr.io/gremia-tech/agent-remote-bridge:${{ needs.test.outputs.version }}" --help | grep -F "host ${{ needs.test.outputs.version }}"
+            ghcr.io/crow-tech-pte-ltd/agent-remote-bridge:${{ needs.test.outputs.version }}
+            ghcr.io/crow-tech-pte-ltd/agent-remote-bridge:latest
+      - run: docker run --rm "ghcr.io/crow-tech-pte-ltd/agent-remote-bridge:${{ needs.test.outputs.version }}" --help | grep -F "host ${{ needs.test.outputs.version }}"
 
   # Homebrew formula kept in this repository's Formula/ folder:
-  #   brew tap gremia-tech/agent-remote-bridge https://github.com/gremia-tech/agent-remote-bridge
+  #   brew tap crow-tech-pte-ltd/agent-remote-bridge https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge
   #   brew install agent-remote-bridge
   homebrew:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
