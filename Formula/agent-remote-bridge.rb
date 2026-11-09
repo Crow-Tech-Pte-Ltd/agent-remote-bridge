@@ -2,40 +2,42 @@
 class AgentRemoteBridge < Formula
   desc "Bridge for the AI Agent Remote app: watch and control coding agents from your phone"
   homepage "https://github.com/gremia-tech/agent-remote-bridge"
-  version "0.1.30"
+  version "0.1.32"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.30/agent-remote-bridge-0.1.30-macos-arm64.zip"
-      sha256 "46ccdc33f535171afa4088d53ed192713c957051c571eac2101d95227635419b"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.32/agent-remote-bridge-0.1.32-macos-arm64.zip"
+      sha256 "408c2afe4e13e13fcc7f6d8a2bd8a3c3847e894b9162d3af21ba19c3131f306c"
     end
     on_intel do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.30/agent-remote-bridge-0.1.30-macos-x64.zip"
-      sha256 "a302663b08f415ea97d84d1a6a086ad735402a3632e0d125699b746c8894f742"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.32/agent-remote-bridge-0.1.32-macos-x64.zip"
+      sha256 "9ca25e0bdc191eb15a68229f2ebdce93c1cf55ec46d79abba4c373218b6d96cf"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.30/agent-remote-bridge-0.1.30-linux-arm64.zip"
-      sha256 "927c7d2c55aa20926d8d62a13fedcc44405e6ca00ef4c89206b0b6ed26d0f204"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.32/agent-remote-bridge-0.1.32-linux-arm64.zip"
+      sha256 "87b9d86b61a8a09f9d278b4f0f4cdf2677387b0831cd70721e812e14e52895a0"
     end
     on_intel do
-      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.30/agent-remote-bridge-0.1.30-linux-x64.zip"
-      sha256 "64d708760192071e67388a745c6509ca7a6913a1cfed56839b7cdd178bfa8c49"
+      url "https://github.com/gremia-tech/agent-remote-bridge/releases/download/server-v0.1.32/agent-remote-bridge-0.1.32-linux-x64.zip"
+      sha256 "d29846ff4208116cb19b855e6a9f511b7d88b7d2b5fa948b3662d7907106d265"
     end
   end
 
   def install
     libexec.install Dir["*"]
+    # agent-remote is the command; herdr-remote is its earlier name.
+    bin.install_symlink libexec/"herdr-remote" => "agent-remote"
     bin.install_symlink libexec/"herdr-remote"
   end
 
   def caveats
-    "Run `herdr-remote up` and pair from the AI Agent Remote app on the same Wi-Fi."
+    "Run `agent-remote up` and pair from the AI Agent Remote app on the same Wi-Fi."
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/herdr-remote --help")
+    assert_match version.to_s, shell_output("#{bin}/agent-remote --help")
   end
 end
