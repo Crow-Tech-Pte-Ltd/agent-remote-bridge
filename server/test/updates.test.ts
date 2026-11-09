@@ -56,7 +56,7 @@ describe("versions and settings",()=>{
     expect(kitPlatform("win32","x64")).toBeUndefined();
   });
   test("releases come from GitHub unless a test points at loopback",()=>{
-    expect(releasesBase(undefined)).toBe("https://github.com/gremia-tech/agent-remote-bridge");
+    expect(releasesBase(undefined)).toBe("https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge");
     expect(releasesBase("http://127.0.0.1:9/x/")).toBe("http://127.0.0.1:9/x");
     expect(()=>releasesBase("http://example.com")).toThrow();
   });

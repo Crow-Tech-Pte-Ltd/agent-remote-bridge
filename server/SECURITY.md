@@ -19,7 +19,7 @@ The bridge runs as your user, and anyone who controls your account controls it, 
 
 ## Updates
 
-Self-updates trust the same things as the install script and Homebrew: GitHub's TLS and the checksums published with each release. Whoever can publish releases on `gremia-tech/agent-remote-bridge` can ship code to bridges that update automatically. Run `herdr-remote update --mode notify` (or `off`) if you'd rather review releases first.
+Self-updates trust the same things as the install script and Homebrew: GitHub's TLS and the checksums published with each release. Whoever can publish releases on `Crow-Tech-Pte-Ltd/agent-remote-bridge` can ship code to bridges that update automatically. Run `herdr-remote update --mode notify` (or `off`) if you'd rather review releases first.
 
 The bridge downloads only from GitHub's release hosts and never installs an older version. It replaces itself only with a kit whose checksum matches and whose binary runs and reports the expected version. It never uses administrator rights. Starting an update from a phone needs control access, which already allows running any command as you.
 
