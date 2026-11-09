@@ -28,8 +28,10 @@ jobs:
       - run: sh -n install.sh && shellcheck -S warning -s sh install.sh
       - name: Install the latest release with the script
         run: |
-          HOME="$RUNNER_TEMP/home" sh install.sh
-          "$RUNNER_TEMP/home/.local/bin/herdr-remote" --help | head -n 3
+          HOME="$RUNNER_TEMP/home" SHELL=/bin/bash sh install.sh
+          "$RUNNER_TEMP/home/.local/bin/agent-remote" --help | head -n 3
+          "$RUNNER_TEMP/home/.local/bin/herdr-remote" --help | head -n 1
+          grep -F '.local/bin' "$RUNNER_TEMP/home/.bashrc"
 
   publish:
     needs: check

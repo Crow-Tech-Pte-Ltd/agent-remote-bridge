@@ -50,7 +50,7 @@ class Limiter {
 
   }
 }
-interface SocketData {device:Device;session?:string;generation:number;observer?:TerminalHandle;pane?:string;identity?:string;lease?:string;controllerFrames?:boolean;seq?:number;fitHost?:boolean;skippingSince?:number;size?:{cols:number;rows:number};}
+export interface SocketData {device:Device;session?:string;generation:number;observer?:TerminalHandle;pane?:string;identity?:string;lease?:string;controllerFrames?:boolean;seq?:number;fitHost?:boolean;skippingSince?:number;size?:{cols:number;rows:number};acks?:boolean;sent?:number;acked?:number;}
 export interface BridgeOptions {
   state:State;backend:HostBackend;hostName?:string;hostname?:string;port?:number;epoch?:string;
   tls?:{cert:string|Bun.BunFile;key:string|Bun.BunFile};leaseMilliseconds?:number;
@@ -85,10 +85,19 @@ export function createBridge(options:BridgeOptions) {
   let stopped=false,requests=0,fileRequests=0;
   const nearby=new Map<string,NearbyRequest>();let nearbyFailures:number[]=[];
   const send=(ws:ServerWebSocket<SocketData>,value:unknown)=>{
-    if(!state.active(ws.data.device.id)){ws.close(4001,"Device revoked");return;}
+    if(!state.active(ws.data.device.id)){ws.close(4001,"Device revoked");return 0;}
     const text=JSON.stringify(value);
-    if(text.length>MAX_RESPONSE || ws.getBufferedAmount()>4_194_304 || ws.send(text)===-1) {ws.close(4008,"Resynchronization required");}
+    if(text.length>MAX_RESPONSE || ws.getBufferedAmount()>4_194_304 || ws.send(text)===-1) {ws.close(4008,"Resynchronization required");return 0;}
+    return text.length;
   };
+  // A relay (or proxy) in the path takes the bridge's bytes at once and holds them for a slow phone, so the
+  // socket's own buffer never fills there and the relay drops the stream instead. Phones that acknowledge
+  // what they received (`acks` on observe) are paced by that: past the window, skip ahead to a full frame.
+  const ACK_WINDOW=262_144,ACK_DRAINED=98_304;
+  const unacked=(ws:ServerWebSocket<SocketData>)=>ws.data.acks?(ws.data.sent??0)-(ws.data.acked??0):0;
+  const behind=(ws:ServerWebSocket<SocketData>)=>ws.getBufferedAmount()>524_288||unacked(ws)>ACK_WINDOW;
+  const drained=(ws:ServerWebSocket<SocketData>)=>ws.getBufferedAmount()<131_072&&unacked(ws)<ACK_DRAINED;
+  const sendFrame=(ws:ServerWebSocket<SocketData>,value:TerminalFrame)=>{ws.data.sent=(ws.data.sent??0)+send(ws,value);};
   /** After a device stops viewing a parked pane (not just re-observing it), restore the computer's size. */
   function checkParked(device:string,session:string|undefined,pane:string|undefined) {
     if(!pane)return;const key=controls.key(session,pane),item=controls.parked.get(key);
@@ -104,13 +113,13 @@ export function createBridge(options:BridgeOptions) {
     if((ws.data.seq===undefined && !value.full) || (ws.data.seq!==undefined && !value.full && value.seq!==ws.data.seq+1)) {clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});return;}
     ws.data.seq=value.seq;
     // A slow phone link must not end the stream: skip ahead to the next full frame instead.
-    if(ws.data.skippingSince!==undefined || ws.getBufferedAmount()>524_288) {
-      if(value.full && ws.getBufferedAmount()<131_072){ws.data.skippingSince=undefined;send(ws,value);return;}
+    if(ws.data.skippingSince!==undefined || behind(ws)) {
+      if(value.full && drained(ws)){ws.data.skippingSince=undefined;sendFrame(ws,value);return;}
       ws.data.skippingSince??=Date.now();
-      if(Date.now()-ws.data.skippingSince>3000 && ws.getBufferedAmount()<131_072){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
+      if(Date.now()-ws.data.skippingSince>3000 && drained(ws)){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
       return;
     }
-    send(ws,value);
+    sendFrame(ws,value);
   }
   function attach(ws:ServerWebSocket<SocketData>,lease:Lease):boolean {
     ws.data.lease=lease.leaseId;
@@ -127,8 +136,15 @@ export function createBridge(options:BridgeOptions) {
     if(message.length>16_384)throw new BridgeError("request_too_large","Frame limit",413);
     let value:Record<string,unknown>;try{value=JSON.parse(message.toString());if(!value || typeof value!=="object" || Array.isArray(value))throw 0;}catch{limiter.check(`ws:${ws.data.device.id}`,120,10_000);throw new BridgeError("invalid_request","Invalid frame");}
     // Keystrokes get their own, larger budget; everything else (which can spawn helpers) stays tight.
-    if(value.type==="input" || value.type==="scroll")limiter.check(`wsinput:${ws.data.device.id}`,1200,10_000);else limiter.check(`ws:${ws.data.device.id}`,120,10_000);
+    if(value.type==="input" || value.type==="scroll" || value.type==="ack")limiter.check(`wsinput:${ws.data.device.id}`,1200,10_000);else limiter.check(`ws:${ws.data.device.id}`,120,10_000);
     if(value.type==="unobserve"){clearStream(ws);return;}
+    if(value.type==="ack") {
+      // Bytes of pane frames received since the last observe; never more than was sent.
+      only(value,["type","bytes"]);const bytes=Number(value.bytes);
+      if(!Number.isSafeInteger(bytes) || bytes<0)throw new BridgeError("invalid_request","Invalid ack");
+      ws.data.acked=Math.max(ws.data.acked??0,Math.min(bytes,ws.data.sent??0));
+      return;
+    }
     if(value.type==="input") {
       // Interactive keystrokes for the pane this socket controls. Delivered at most once:
       // nothing is journaled or retried, so a lost socket can never replay typing.
@@ -146,11 +162,13 @@ export function createBridge(options:BridgeOptions) {
       return;
     }
     if(value.type==="observe") {
-      only(value,["type","paneId","identityToken","cols","rows","leaseId","fit"]);
+      only(value,["type","paneId","identityToken","cols","rows","leaseId","fit","acks"]);
+      if(value.acks!==undefined && typeof value.acks!=="boolean")throw new BridgeError("invalid_request","Invalid acks");
       if(value.fit!==undefined && !["host","client"].includes(String(value.fit)))throw new BridgeError("invalid_request","Invalid fit");
       const pane=str(value.paneId),identity=str(value.identityToken),fitHost=value.fit==="host" && !!backend.paneSize;
       let cols=value.cols===undefined && value.fit==="host"?80:integer(value.cols,20,400),rows=value.rows===undefined && value.fit==="host"?24:integer(value.rows,5,200);
       clearStream(ws);const generation=ws.data.generation;
+      ws.data.acks=value.acks===true;ws.data.sent=0;ws.data.acked=0;
       await controls.identity(ws.data.session,pane,identity);
       // Host fit observes the computer's exact grid, so the phone can scale it rather than crop it.
       if(fitHost){const size=await deadline(backend.paneSize!(ws.data.session,pane),3000).catch(()=>undefined);if(size){cols=size.cols;rows=size.rows;}}
@@ -209,15 +227,18 @@ export function createBridge(options:BridgeOptions) {
       return reply(state.finish(device.id,id,"accepted",result??null));
     }catch(error){const f=failure(error);const ambiguous=!(error instanceof Error && "deliveryAmbiguous" in error) || (error as BridgeError).deliveryAmbiguous;if(ambiguous)(f.body as {deliveryAmbiguous?:boolean}).deliveryAmbiguous=true;state.finish(device.id,id,ambiguous?"unknown":"failed",f.body);return reply(f.body,f.status);}
   }
+  // The live-socket handlers, shared by the phone listener and the in-process entry (`local`) below.
+  function socketOpen(ws:ServerWebSocket<SocketData>){sockets.add(ws);send(ws,{type:"connected",epoch});}
+  function socketMessage(ws:ServerWebSocket<SocketData>,message:string|Buffer){websocketMessage(ws,message).catch(error=>{const f=failure(error);send(ws,{type:"error",...f.body.error});});}
+  function socketClose(ws:ServerWebSocket<SocketData>){sockets.delete(ws);clearStream(ws);}
+  function admitSocket(device:Device){if([...sockets].filter(ws=>ws.data.device.id===device.id).length>=4 || sockets.size>=64)throw new BridgeError("rate_limited","Socket limit",429);}
   let relayServer:Bun.Server<SocketData>|undefined;
   const listen=(hostname:string,port:number)=>Bun.serve<SocketData>({
     hostname,port,tls:options.tls,idleTimeout:30,maxRequestBodySize:MAX_BODY,
     websocket:{maxPayloadLength:16_384,idleTimeout:60,backpressureLimit:1_048_576,closeOnBackpressureLimit:true,sendPings:true,
       // Terminal frames are text; clients that offer per-message deflate (Android) get them compressed.
       perMessageDeflate:true,
-      open(ws){sockets.add(ws);send(ws,{type:"connected",epoch});},
-      message(ws,message){websocketMessage(ws,message).catch(error=>{const f=failure(error);send(ws,{type:"error",...f.body.error});});},
-      close(ws){sockets.delete(ws);clearStream(ws);},
+      open:socketOpen,message:socketMessage,close:socketClose,
     },
     async fetch(request,server) {
       const response=await handle(request,server,server===relayServer);
@@ -284,13 +305,13 @@ export function createBridge(options:BridgeOptions) {
           return reply(options.certificate());
         }
         if(url.pathname==="/v1/live" && request.method==="GET") {
-          if([...sockets].filter(ws=>ws.data.device.id===device.id).length>=4 || sockets.size>=64)throw new BridgeError("rate_limited","Socket limit",429);
+          admitSocket(device);
           if(server.upgrade(request,{data:{device,session,generation:0}}))return;
           throw new BridgeError("invalid_request","WebSocket upgrade required");
         }
         const parts=url.pathname.split("/").filter(Boolean).map(part=>{try{return str(decodeURIComponent(part));}catch{throw new BridgeError("invalid_request","Malformed path");}});
         if(request.method==="GET") {
-          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{}),...(options.updates?{bridgeUpdates:true}:{})},...(options.updates?{bridgeRelease:options.updates.status()}:{}),...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
+          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,liveAcks:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{}),...(options.updates?{bridgeUpdates:true}:{})},...(options.updates?{bridgeRelease:options.updates.status()}:{}),...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
           if(parts[1]==="operations" && parts.length===3){if(!UUID.test(parts[2]!))throw new BridgeError("invalid_request","Invalid operation ID");return reply(state.operation(device.id,parts[2]!));}
           if(parts[1]==="panes" && parts.length===4){
             if(parts[3]==="output"){const lines=url.searchParams.has("lines")?integer(Number(url.searchParams.get("lines")),1,2000):240;return reply(await deadline(backend.output(session,parts[2]!,lines)));}
@@ -429,14 +450,28 @@ export function createBridge(options:BridgeOptions) {
     controls.sweep();for(const ws of sockets){
       if(!state.active(ws.data.device.id)){clearStream(ws);ws.close(4001,"Device revoked");}
       // An idle pane sends no further full frame; resubscribe once the link has drained.
-      else if(ws.data.skippingSince!==undefined && Date.now()-ws.data.skippingSince>3000 && ws.getBufferedAmount()<131_072){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
+      else if(ws.data.skippingSince!==undefined && Date.now()-ws.data.skippingSince>3000 && drained(ws)){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
     }
     // A large Herdr session can take ~0.5s to snapshot; every other tick keeps that load modest.
     if(++tick%2===0)void followPaneSizes();else void watchSnapshots();
   },1000);sweep.unref();
-  return {server,relayServer,controls,epoch,
+  // In-process entry for the console's web remote (src/web.ts). It is not a listener: the console checks
+  // its own browser session, then calls the phone API's handler with the web device's bearer token and
+  // no Origin, and hands browser WebSockets to the same live-socket functions. Phones see no change.
+  const inProcess={requestIP:()=>({address:"local",family:"",port:0}),upgrade:()=>false} as unknown as Bun.Server<SocketData>;
+  const local={
+    async fetch(request:Request):Promise<Response>{const response=await handle(request,inProcess,false);return response?compressed(request,response):reply({error:{code:"not_found",message:"Unknown route"}},404);},
+    /** Throws 429 when this device or the bridge already has its maximum of live sockets. */
+    admit:admitSocket,
+    open:socketOpen,message:socketMessage,close:socketClose,
+  };
+  return {server,relayServer,controls,epoch,local,
     /** Phones connected right now (live sockets and control leases), for restarts that wait until nobody is here. */
     activity(){return sockets.size+controls.leases.size;},
+    /** The default session's snapshot for the console overview, through the same shared read phones use. */
+    snapshot(){return deadline(snapshotOf(undefined),3000);},
+    /** Devices with a live socket or an active control lease right now (IDs only). */
+    connected(){const ids=new Set<string>();for(const ws of sockets)ids.add(ws.data.device.id);for(const lease of controls.leases.values())if(lease.active&&lease.expires>Date.now())ids.add(lease.deviceId);return ids;},
     revoke(device:string){state.revoke(device);controls.revoke(device);for(const ws of sockets)if(ws.data.device.id===device){clearStream(ws);ws.close(4001,"Device revoked");}},
     close(){if(stopped)return;stopped=true;clearInterval(sweep);clearInterval(identitySweep);controls.close();for(const ws of sockets)ws.close(1001,"Server shutdown");backend.close();server.stop(true);relayServer?.stop(true);},
   };

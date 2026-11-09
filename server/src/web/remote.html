@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>AI Agent Remote</title>
+<link rel="icon" href="/remote/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/remote/assets/xterm.css">
+<link rel="stylesheet" href="/remote/assets/app.css">
+</head><body>
+<div id="gate" class="gate" hidden>
+  <h1>AI Agent Remote</h1>
+  <p id="gate-text" class="muted">Run <code>agent-remote web</code> on this computer and open the link it prints.</p>
+  <form id="login" hidden>
+    <input type="text" name="username" autocomplete="username" value="AI Agent Remote" hidden>
+    <label>Password<input id="login-password" type="password" autocomplete="current-password" required maxlength="200"></label>
+    <button class="primary" type="submit">Sign in</button>
+    <p class="note">Your browser warned about this site's certificate because the bridge made it itself. Before you sign in, open the certificate from the address bar and check that its SHA-256 fingerprint matches the one in the console on your computer (Web remote section) or in <code>agent-remote certificate</code>. If they differ, someone on this network may be in between: don't type the password.</p>
+  </form>
+  <p id="gate-error" class="error" role="alert"></p>
+</div>
+<div id="app" class="app" hidden>
+  <aside id="sidebar" class="sidebar" aria-label="Agents and projects">
+    <header class="bar">
+      <div class="host"><span id="conn" class="dot" title="Connecting"></span><strong id="host-name">Computer</strong></div>
+      <span id="scope-badge" class="badge" hidden>Read only</span>
+      <button id="menu-button" class="icon" aria-label="Menu" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <div id="menu" class="menu" role="menu" hidden>
+        <div id="menu-device" class="menu-note"></div>
+        <label id="session-row" class="menu-row" hidden>Session <select id="session-select" aria-label="Session"></select></label>
+        <button role="menuitem" id="sign-out">Sign out this browser</button>
+      </div>
+    </header>
+    <nav class="segments" role="tablist" aria-label="Lists">
+      <button role="tab" id="seg-attention" data-view="attention" aria-selected="true">Attention</button>
+      <button role="tab" id="seg-projects" data-view="projects" aria-selected="false">Projects</button>
+    </nav>
+    <div id="filters" class="filters" role="toolbar" aria-label="Filter by status"></div>
+    <div id="list" class="list"></div>
+  </aside>
+  <main id="detail" class="detail">
+    <div id="empty" class="empty"><h2>Choose a pane</h2><p class="muted">Open an agent or terminal to see it live, read its history and look at its changes.</p></div>
+    <section id="pane" class="pane" hidden>
+      <header class="bar pane-bar">
+        <button id="back" class="icon back" aria-label="Back to the list">‹</button>
+        <div class="title"><strong id="pane-title"></strong><span id="pane-subtitle" class="muted"></span></div>
+        <span id="pane-status" class="status"></span>
+      </header>
+      <nav class="tabs" role="tablist" aria-label="Pane view">
+        <button role="tab" data-tab="terminal" aria-selected="true">Terminal</button>
+        <button role="tab" data-tab="history" aria-selected="false">History</button>
+        <button role="tab" data-tab="changes" aria-selected="false">Changes</button>
+        <button role="tab" data-tab="files" aria-selected="false">Files</button>
+      </nav>
+      <div id="tab-terminal" class="tab-body terminal-tab" role="tabpanel">
+        <div class="toolbar">
+          <span id="control-state" class="control-state">Watching</span>
+          <button id="take" class="primary">Take control</button>
+          <button id="takeover" class="danger" hidden>Take over</button>
+          <button id="release" hidden>Release</button>
+          <label class="check" id="fit-row" hidden><input type="checkbox" id="fit"> Fit to window</label>
+          <span class="spacer"></span>
+          <button class="icon" id="smaller" aria-label="Smaller terminal text">A−</button>
+          <button class="icon" id="larger" aria-label="Larger terminal text">A+</button>
+        </div>
+        <div id="terminal-note" class="note-line" hidden></div>
+        <div id="viewport" class="viewport" aria-label="Live terminal"><div id="term" class="term"></div></div>
+        <div id="keys" class="keys" role="toolbar" aria-label="Special keys" hidden></div>
+        <form id="composer" class="composer" hidden>
+          <textarea id="message" rows="1" placeholder="Message" aria-label="Message to send" maxlength="32000"></textarea>
+          <button id="send" class="primary" type="submit" aria-label="Send message">Send</button>
+        </form>
+        <div id="input-result" class="note-line" role="status"></div>
+      </div>
+      <div id="tab-history" class="tab-body" role="tabpanel" hidden>
+        <div class="toolbar">
+          <input id="find" type="search" placeholder="Find in history" aria-label="Find in history">
+          <span id="find-count" class="muted small"></span>
+          <button class="icon" id="find-prev" aria-label="Previous match">↑</button>
+          <button class="icon" id="find-next" aria-label="Next match">↓</button>
+          <span class="spacer"></span>
+          <select id="history-lines" aria-label="Lines of terminal history" hidden></select>
+          <label class="check" id="tools-row" hidden><input type="checkbox" id="show-tools"> Tool activity</label>
+          <button id="history-refresh">Refresh</button>
+        </div>
+        <div id="history" class="history" tabindex="0" aria-label="History"></div>
+      </div>
+      <div id="tab-changes" class="tab-body" role="tabpanel" hidden>
+        <div id="changes" class="changes"></div>
+      </div>
+      <div id="tab-files" class="tab-body" role="tabpanel" hidden>
+        <div id="files" class="files"></div>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</div>
+<dialog id="confirm"><p id="confirm-text"></p><div class="row"><button id="confirm-no">Cancel</button><button id="confirm-yes" class="danger">Take over</button></div></dialog>
+<script src="/remote/assets/xterm.js"></script>
+<script src="/remote/assets/app.js"></script>
+</body></html>
