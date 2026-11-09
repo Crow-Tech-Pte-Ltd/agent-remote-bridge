@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { State } from "../src/state";
 import { createBridge } from "../src/app";
 import type { HostBackend } from "../src/backend/types";
-import { createUpdater, detectInstall, installRelease, kitPlatform, latestRelease, mode, newer, releasesBase, type BridgeRelease, type Install } from "../src/updates";
+import { createUpdater, detectInstall, installRelease, kitPlatform, linkCommands, latestRelease, mode, newer, releasesBase, type BridgeRelease, type Install } from "../src/updates";
 
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const f of cleanup.splice(0).reverse())f();});
@@ -97,6 +97,8 @@ describe("installing a release",()=>{
     const target=await installRelease(install,"0.1.31",{base:releases.base});
     expect(target).toBe(join(kit.root,"0.1.31/herdr-remote"));
     expect(readlinkSync(join(kit.home,".local/bin/herdr-remote"))).toBe(target);
+    // The command's new name is linked too; the old one keeps working for scripts and services.
+    expect(readlinkSync(join(kit.home,".local/bin/agent-remote"))).toBe(target);
     expect(readdirSync(kit.root).sort()).toEqual(["0.1.30","0.1.31"]);
     expect(readFileSync(join(kit.root,"0.1.31/README.txt"),"utf8")).toBe("kit 0.1.31\n");
   });
@@ -105,6 +107,19 @@ describe("installing a release",()=>{
     rmSync(link);writeFileSync(link,"mine");
     await installRelease(detectInstall({stamped:true,container:false,executable:kit.executable,home:kit.home}),"0.1.31",{base:releases.base});
     expect(readFileSync(link,"utf8")).toBe("mine");
+  });
+  test("a copy that updated itself before the rename links agent-remote when it starts",()=>{
+    const kit=kitHome("0.1.31"),install=detectInstall({stamped:true,container:false,executable:kit.executable,home:kit.home});
+    linkCommands(install);
+    expect(readlinkSync(join(kit.home,".local/bin/agent-remote"))).toBe(kit.executable);
+    expect(readlinkSync(join(kit.home,".local/bin/herdr-remote"))).toBe(kit.executable);
+  });
+  test("an agent-remote that belongs to another program is left alone",async()=>{
+    const kit=kitHome("0.1.30"),releases=releaseServer("0.1.31"),other=join(kit.home,"other-agent-remote"),link=join(kit.home,".local/bin/agent-remote");
+    writeFileSync(other,"another tool");symlinkSync(other,link);
+    await installRelease(detectInstall({stamped:true,container:false,executable:kit.executable,home:kit.home}),"0.1.31",{base:releases.base});
+    expect(readlinkSync(link)).toBe(other);
+    expect(readlinkSync(join(kit.home,".local/bin/herdr-remote"))).toBe(join(kit.root,"0.1.31/herdr-remote"));
   });
   test("a checksum mismatch or a binary that reports another version installs nothing",async()=>{
     for(const release of [releaseServer("0.1.31",{wrongSum:true}),releaseServer("0.1.31",{help:"Herdr Remote host 0.1.99"})]) {

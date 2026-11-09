@@ -34,15 +34,17 @@ class AgentRemoteBridge < Formula
 
   def install
     libexec.install Dir["*"]
+    # agent-remote is the command; herdr-remote is its earlier name.
+    bin.install_symlink libexec/"herdr-remote" => "agent-remote"
     bin.install_symlink libexec/"herdr-remote"
   end
 
   def caveats
-    "Run \`herdr-remote up\` and pair from the AI Agent Remote app on the same Wi-Fi."
+    "Run \`agent-remote up\` and pair from the AI Agent Remote app on the same Wi-Fi."
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/herdr-remote --help")
+    assert_match version.to_s, shell_output("#{bin}/agent-remote --help")
   end
 end
 RUBY

@@ -48,7 +48,7 @@ jobs:
           for t in bun-linux-x64 bun-linux-arm64; do scripts/package-release.sh "${{ needs.test.outputs.version }}" "$t" ../dist; done
           # Smoke test the x64 kit on this runner.
           mkdir -p /tmp/kit && unzip -q ../dist/*-linux-x64.zip -d /tmp/kit
-          /tmp/kit/agent-remote/herdr-remote --help | grep -F "host ${{ needs.test.outputs.version }}"
+          /tmp/kit/agent-remote/agent-remote --help | grep -F "host ${{ needs.test.outputs.version }}"
           /tmp/kit/agent-remote/herdr-remote init --state /tmp/kit/state --url https://127.0.0.1:18443 --port 18443
       - uses: actions/upload-artifact@v4
         with: { name: bridge-linux, path: dist/*.zip, if-no-files-found: error }
@@ -66,7 +66,7 @@ jobs:
           for t in bun-darwin-arm64 bun-darwin-x64; do scripts/package-release.sh "${{ needs.test.outputs.version }}" "$t" ../dist; done
           # This runner is Apple silicon: run the arm64 kit with only the stock system tools.
           mkdir -p /tmp/kit && unzip -q ../dist/*-macos-arm64.zip -d /tmp/kit
-          env -i HOME=/tmp/kit PATH=/usr/bin:/bin:/usr/sbin:/sbin /tmp/kit/agent-remote/herdr-remote --help | grep -F "host ${{ needs.test.outputs.version }}"
+          env -i HOME=/tmp/kit PATH=/usr/bin:/bin:/usr/sbin:/sbin /tmp/kit/agent-remote/agent-remote --help | grep -F "host ${{ needs.test.outputs.version }}"
           env -i HOME=/tmp/kit PATH=/usr/bin:/bin:/usr/sbin:/sbin /tmp/kit/agent-remote/herdr-remote init --state /tmp/kit/state --url https://127.0.0.1:18443 --port 18443
       - uses: actions/upload-artifact@v4
         with: { name: bridge-macos, path: dist/*.zip, if-no-files-found: error }
@@ -89,7 +89,7 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then echo "$tag already released"; exit 0; fi
           (cd dist && sha256sum *.zip > SHA256SUMS)
           {
-            echo "Standalone AI Agent Remote bridge $VERSION. Download the zip for your computer, unzip it and follow README.txt (\`./herdr-remote up\`)."
+            echo "Standalone AI Agent Remote bridge $VERSION. Download the zip for your computer, unzip it and follow README.txt (\`./agent-remote up\`)."
             echo
             echo "| Computer | File |"
             echo "|---|---|"

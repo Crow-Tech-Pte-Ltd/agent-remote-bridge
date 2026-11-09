@@ -11,6 +11,8 @@ The bridge gives a paired phone the same power over your terminals as you have a
 - **Certificate renewal keeps pairings.** Thirty days before the certificate expires, the bridge creates a successor and signs its fingerprint with the current key. Phones that connect before the switch verify that statement and move over; others pair again.
 - **Local console.** The web console listens on 127.0.0.1 only, admits a browser through a one-time link that only your user account can mint, and checks Host, Origin and a CSRF token on every change.
 
+- **Web remote.** A browser never holds a device token: each sign-in pairs a device whose token stays inside the bridge process, and the browser gets an HttpOnly SameSite=Strict cookie plus a CSRF token. Requests run through the phone API's own handler with an allowlist (no pairing, relay or certificate routes), so leases, identity checks, the request journal and revocation apply unchanged. The page loads only its own files under a strict Content-Security-Policy. On the local network it needs a password (stored as an argon2id hash) and TLS with the bridge's certificate, and it never serves the console's administration.
+
 ## Trust boundary
 
 The bridge runs as your user, and anyone who controls your account controls it, as with SSH. A phone with control access is equivalent to a shell as you. Keep phones locked and revoke lost ones.
@@ -26,6 +28,7 @@ The bridge downloads only from GitHub's release hosts and never installs an olde
 - Device tokens are bearer secrets sent inside the pinned TLS on each request; device-bound keys that never leave the phone's secure hardware are planned.
 - Bridges still accept TLS 1.2 from older app versions.
 - The relay's shared phone token stays valid unless the relay runs with `--personal-only` (older pairings and the Android app use it).
-- A reverse proxy on the same machine makes remote connections look local; leave discovery off in that setup.
+- Browsers cannot pin the bridge's certificate. On the local network the first visit shows a warning; until you compare fingerprints, someone on the same network could intercept that visit and the web password. Tailscale (`tailscale cert`) or a hosted name with TLS passthrough are the planned ways to give browsers a real certificate.
+- A reverse proxy on the same machine makes remote connections look local; leave discovery off in that setup, and don't put one (or `tailscale serve`) in front of the console port: the console refuses other host names, and its design assumes only this computer can reach it.
 
 Report problems privately to the maintainers rather than in a public issue.

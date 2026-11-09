@@ -12,7 +12,11 @@ export interface Config {version:1;hostName:string;url:string;listen:string;port
   /** A bridge joined to a relay also accepts phones on this network unless this is `false`. */
   localRoute?:boolean;
   /** Bridge self-updates: auto (default) installs and restarts when idle, notify only tells phones, off never checks. */
-  updates?:'auto'|'notify'|'off';}
+  updates?:'auto'|'notify'|'off';
+
+  /** Web remote on the local network (opt-in, needs `agent-remote web password`): HTTPS with the bridge
+   *  certificate on `webListen` (default 0.0.0.0) port `webPort` (default 8791); `webScope` defaults to control. */
+  webLan?:boolean;webListen?:string;webPort?:number;webScope?:'read'|'control';}
 export function endpoint(value:string):URL {
   const url=new URL(value);
   if(url.protocol!=="https:" || url.username || url.password || url.search || url.hash || !["","/"].includes(url.pathname))throw new Error("Endpoint must be a root HTTPS URL without credentials, query, or fragment");
@@ -28,6 +32,8 @@ export function loadConfig(directory:string):Config {
   if(config.backend!==undefined&&!['herdr','orca','plain'].includes(config.backend))throw new Error("Unknown backend");
   if(config.backend==="orca"&&typeof config.orcaConnection!=="string")throw new Error("Orca backend requires a private connection file");
   if(config.consolePort!==undefined&&(!Number.isInteger(config.consolePort)||config.consolePort<1||config.consolePort>65535))throw new Error("Invalid console port");
+  if(config.webPort!==undefined&&(!Number.isInteger(config.webPort)||config.webPort<1||config.webPort>65535))throw new Error("Invalid web remote port");
+  if(config.webScope!==undefined&&!["read","control"].includes(config.webScope))throw new Error("Invalid web remote scope");
   const key=lstatSync(config.key);if(!key.isFile() || key.isSymbolicLink() || (key.mode&0o077)!==0)throw new Error("TLS private key must be a private regular file (0600)");
   return config;
 }

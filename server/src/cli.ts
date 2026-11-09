@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import QRCode from "qrcode";
 import { State, privateDirectory } from "./state";
 import { initialize, loadConfig, saveConfig, certificatePin } from "./config";
-import { createUpdater, detectInstall, installRelease, latestRelease, mode as updateMode, newer, type UpdateMode } from "./updates";
+import { createUpdater, detectInstall, installRelease, linkCommands, latestRelease, mode as updateMode, newer, type UpdateMode } from "./updates";
 import { loadOrcaConnection } from "./backend/orca/connection";
 import { randomUUID } from "node:crypto";
 import { connectionProfile, type HostConnection } from "./connection";
@@ -14,48 +14,53 @@ import { lanAddresses, localHostname } from "./discovery";
 import { createRelay, readRelayProfile, relayProfileFor, relaySecrets } from "./relay";
 import { startServices, type Services } from "./services";
 import { startConsole, consoleLaunchURL, openBrowser } from "./console";
+import { setWebPassword } from "./web";
 import { certificateStatus, maintainCertificate, renewCertificate, switchCertificate } from "./certificate";
 process.umask(0o077);
 // Release builds stamp their version with --define HERDR_REMOTE_VERSION='"x.y.z"'.
 declare const HERDR_REMOTE_VERSION:string|undefined;
 const stamped=typeof HERDR_REMOTE_VERSION==="string",version=stamped?HERDR_REMOTE_VERSION:"0.1.0";
-const usage=`Herdr Remote host ${version}
-  herdr-remote up [--port 8443] [--name NAME] [--no-discovery] [--backend herdr|orca|plain]
+const usage=`AI Agent Remote bridge host ${version} (agent-remote; herdr-remote is its earlier name)
+  agent-remote up [--port 8443] [--name NAME] [--no-discovery] [--backend herdr|orca|plain]
       One step for a computer on your Wi-Fi: creates TLS material on first run, then serves
       and advertises this computer so the phone app finds it under Nearby. Pairing needs the
       code that pops up on this computer.
-  herdr-remote init --url https://host.example:8443 [--listen 127.0.0.1] [--port 8443] [--san localhost,127.0.0.1]
-  herdr-remote serve [--backend herdr|orca|plain] [--herdr /path/to/herdr] [--session NAME] [--discoverable]
+  agent-remote init --url https://host.example:8443 [--listen 127.0.0.1] [--port 8443] [--san localhost,127.0.0.1]
+  agent-remote serve [--backend herdr|orca|plain] [--herdr /path/to/herdr] [--session NAME] [--discoverable]
   Orca init/serve: --backend orca --orca-connection /private/orca-access.txt (local runtime link)
   Plain terminals (no Herdr or Orca): --backend plain [--folder DIR]... the bridge runs its own shells;
     folders become workspaces (default: your home folder, then whatever you add from the phone)
-  herdr-remote pair [--scope read|control] [--ttl 300] [--uses 1] [--qr] [--connection PRIVATE_PROFILE.json] [--no-relay]
+  agent-remote pair [--scope read|control] [--ttl 300] [--uses 1] [--qr] [--connection PRIVATE_PROFILE.json] [--no-relay]
       (--ttl up to 2592000 seconds and --uses up to 20, e.g. for an app reviewer's invitation)
-  herdr-remote devices
-  herdr-remote revoke --device UUID
-  herdr-remote console              print a one-time link to the running bridge's local web console
+  agent-remote devices
+  agent-remote revoke --device UUID
+  agent-remote console              print a one-time link to the running bridge's local web console
       (serve/up open it in the browser on a desktop; --no-console or "console": false turns it off)
-  herdr-remote update [--check] [--mode auto|notify|off]   install the newest release the way this copy was
+  agent-remote update [--check] [--mode auto|notify|off]   install the newest release the way this copy was
       installed (install script, Homebrew or an unzipped kit; never with sudo) and restart the running bridge
       into it. --check only reports. auto (default): the bridge installs new releases itself and restarts once
       no phone has been connected for 2 minutes; notify: it only tells phones; off: it never checks.
-  herdr-remote certificate [renew [--days N]]   show expiry, or create a successor that paired phones
+  agent-remote web                  print a one-time link to the web remote (the app in a browser) on this computer
+  agent-remote web password [--clear]   set the password for the web remote on your local network
+      (typed twice, or read from standard input); then turn it on in the console or with "webLan": true.
+      It is served over HTTPS with the bridge certificate on port 8791 ("webPort", "webListen", "webScope")
+  agent-remote certificate [renew [--days N]]   show expiry, or create a successor that paired phones
       pick up automatically and switch to it after N days (default 14, at the latest a day before expiry)
 Reach this computer from anywhere through a relay you run (it dials out; no inbound port):
-  herdr-remote relay join PRIVATE_RELAY.json   then serve/up connect to it and pair invitations use it
-  herdr-remote relay status | leave
+  agent-remote relay join PRIVATE_RELAY.json   then serve/up connect to it and pair invitations use it
+  agent-remote relay status | leave
   A relayed bridge also answers phones on this network (--no-local-route or "localRoute": false to stop).
-  On the relay server: herdr-remote relay serve [--listen 127.0.0.1] [--port 8788] [--state DIR] [--personal-only]
-    and herdr-remote relay profile --public-url wss://relay.example.com > PRIVATE_RELAY.json
+  On the relay server: agent-remote relay serve [--listen 127.0.0.1] [--port 8788] [--state DIR] [--personal-only]
+    and agent-remote relay profile --public-url wss://relay.example.com > PRIVATE_RELAY.json
     --personal-only admits only phones the bridge lists (a revoked phone is also refused at the relay);
-    herdr-remote relay rotate --public-url ... issues new relay secrets (bridges must join again)
+    agent-remote relay rotate --public-url ... issues new relay secrets (bridges must join again)
     (relay state defaults to ~/.local/share/herdr-remote-relay; put it behind HTTPS/WSS)
 All commands accept --state DIR (default ~/.local/share/herdr-remote).
 Pairing output contains a short-lived secret. Share it only with the device owner.
 The bridge renews its certificate 30 days before expiry; phones that connect before the switch keep working.`;
 export async function main(args=process.argv.slice(2)) {
   const parsed=parseArgs({args,allowPositionals:true,strict:true,options:{
-    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},check:{type:"boolean"},mode:{type:"string"},
+    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},check:{type:"boolean"},mode:{type:"string"},clear:{type:"boolean"},
   }});
   let command=parsed.positionals[0];const v=parsed.values;
   if(v.backend&&!['herdr','orca','plain'].includes(v.backend))throw new Error("--backend must be herdr, orca or plain");
@@ -107,6 +112,16 @@ export async function main(args=process.argv.slice(2)) {
   if(command==="update"){await update(directory,v);return;}
   const config=loadConfig(directory);
   if(command==="console"){console.log(consoleLaunchURL(directory,config.consolePort??8790));return;}
+  if(command==="web") {
+    if(parsed.positionals[1]==="password") {
+      if(v.clear){await setWebPassword(directory,null);console.log(JSON.stringify({password:false,next:"the web remote is no longer served on the network after the next restart"}));return;}
+      const password=await readPassword();await setWebPassword(directory,password);
+      console.log(JSON.stringify({password:true,next:"turn on \"Web remote on this network\" in the console (or set \"webLan\": true) and restart the bridge"}));return;
+    }
+    if(parsed.positionals[1]!==undefined)throw new Error("web takes password or nothing");
+    const url=consoleLaunchURL(directory,config.consolePort??8790,"/remote/");console.log(url);
+    if(process.stdout.isTTY)openBrowser(url,directory);return;
+  }
   if(command==="certificate") {
     const state=new State(directory,false);
     try {
@@ -135,9 +150,10 @@ export async function main(args=process.argv.slice(2)) {
     // A setting saved in the console replaces the command-line flag that set it; other flags stay.
     const flagFor:Record<string,(keyof typeof flags)[]>={backend:["backend"],herdr:["herdr"],session:["session"],listen:["listen"],port:["port"],localRoute:["no-local-route"]};
     const saved=(keys:string[])=>{for(const key of keys){for(const flag of flagFor[key]??[])delete flags[flag];if(key==="discoverable")discovering=!!loadConfig(directory).discoverable;}};
-    // Self-updates: a phone, the console, the schedule or `herdr-remote update` (SIGUSR2) restart this process
+    // Self-updates: a phone, the console, the schedule or `agent-remote update` (SIGUSR2) restart this process
     // into the new binary in place (same PID), so launchd, systemd or the terminal running it carry on.
-    const updater=createUpdater({version,install:detectInstall({stamped}),
+    const install=detectInstall({stamped});linkCommands(install);
+    const updater=createUpdater({version,install,
       mode:()=>{try{return updateMode(loadConfig(directory).updates);}catch{return "auto";}},
       setMode:value=>saveConfig(directory,{...loadConfig(directory),updates:value}),
       activity:()=>running?.activity()??{phones:0,terminals:0},
@@ -154,7 +170,7 @@ export async function main(args=process.argv.slice(2)) {
     const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});};
     const shutdown=()=>{if(stopping)return;stopping=true;clearInterval(certificateCheck);updater.close();console_?.close();running?.close();unlock();};
     const certificateCheck=setInterval(()=>{void (async()=>{
-      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,message=>console.error(message))&&switchCertificate(current)){console.error("Switched to the renewed bridge certificate.");await restart();}}catch(error){console.error(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
+      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,message=>console.error(message))&&switchCertificate(current)){console.error("Switched to the renewed bridge certificate.");await restart();console_?.reloadRemote();}}catch(error){console.error(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
     })();},6*3_600_000);certificateCheck.unref();
     process.once("SIGINT",()=>{shutdown();process.exit(0);});process.once("SIGTERM",()=>{shutdown();process.exit(0);});
     process.once("exit",()=>{shutdown();});
@@ -198,7 +214,7 @@ export async function main(args=process.argv.slice(2)) {
     else throw new Error("Unknown command. Use --help.");
   }finally{state.close();}
 }
-/** `herdr-remote update`: report, set the policy, or install the newest release and restart the running bridge. */
+/** `agent-remote update`: report, set the policy, or install the newest release and restart the running bridge. */
 async function update(directory:string,v:{check?:boolean;mode?:string}) {
   const hasConfig=existsSync(join(directory,"config.json"));
   if(v.mode!==undefined) {
@@ -238,6 +254,15 @@ async function restartRunning(directory:string,to:string):Promise<string> {
     try{const next=JSON.parse(readFileSync(lock,"utf8"));if(next.nonce!==held.nonce)return `restarted into ${next.version??to}`;}catch{}
   }
   return "asked the running bridge to restart; check its log";
+}
+/** A password from the terminal (not echoed, typed twice) or the first line of standard input. */
+async function readPassword():Promise<string> {
+  if(!process.stdin.isTTY){const text=await new Response(Bun.stdin.stream()).text();return text.split(/\r?\n/)[0]??"";}
+  const { spawnSync }=await import("node:child_process"),{ createInterface }=await import("node:readline");
+  const ask=(prompt:string)=>new Promise<string>(resolve=>{process.stderr.write(prompt);const rl=createInterface({input:process.stdin,terminal:false});rl.once("line",line=>{rl.close();process.stderr.write("\n");resolve(line);});});
+  spawnSync("stty",["-echo"],{stdio:"inherit"});
+  try{const first=await ask("Web remote password (10+ characters): "),second=await ask("Again: ");if(first!==second)throw new Error("The passwords differ");return first;}
+  finally{spawnSync("stty",["echo"],{stdio:"inherit"});}
 }
 function summary(status:ReturnType<typeof certificateStatus>) {return {pin:status.pin,expiresAt:status.expiresAt,...(status.next?{next:{pin:status.next.pin,switchAt:status.next.switchAt}}:{})};}
 if(import.meta.main) main().catch(error=>{

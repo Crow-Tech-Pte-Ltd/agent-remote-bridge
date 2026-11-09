@@ -15,7 +15,9 @@ export interface BridgeRelease {version:string;method:InstallMethod;mode:UpdateM
   state:UpdateState;error:string|null;checkedAt:string|null;notesURL:string|null;closesTerminals:boolean}
 
 export const RELEASES="https://github.com/gremia-tech/agent-remote-bridge";
-const FORMULA="agent-remote-bridge",KIT_ROOT=()=>join(homedir(),".local/share/agent-remote-bridge"),KIT_LINK=()=>join(homedir(),".local/bin/herdr-remote");
+const FORMULA="agent-remote-bridge",KIT_ROOT=()=>join(homedir(),".local/share/agent-remote-bridge");
+/** The command is agent-remote; herdr-remote is its earlier name, still linked for scripts and services that use it. */
+export const COMMAND="agent-remote",LEGACY_COMMAND="herdr-remote";
 const SEMVER=/^\d+\.\d+\.\d+$/,MAX_KIT=300*1024*1024;
 
 export function isVersion(value:unknown):boolean {return typeof value==="string"&&SEMVER.test(value);}
@@ -45,7 +47,7 @@ export function detectInstall(options:{stamped:boolean;executable?:string;home?:
   const home=options.home??homedir(),rootPath=join(home,".local/share/agent-remote-bridge");
   let root=rootPath;try{root=realpathSync(rootPath);}catch{}
   if(inside(real,root)&&dirname(dirname(real))===root&&isVersion(basename(dirname(real))))
-    return {method:"kit",executable:real,canInstall:writable(root),root,link:join(home,".local/bin/herdr-remote"),
+    return {method:"kit",executable:real,canInstall:writable(root),root,link:join(home,".local/bin",COMMAND),
       ...(writable(root)?{}:{manual:`${root} is not writable by this user. Reinstall with the install script.`})};
   if(writable(dirname(real))&&writable(real))return {method:"standalone",executable:real,canInstall:true};
   return {method:"standalone",executable:real,canInstall:false,
@@ -148,6 +150,8 @@ async function fetchKit(version:string,parent:string,base:string,fetcher:typeof 
     const entry=existsSync(binary)?lstatSync(binary):undefined;
     if(!entry?.isFile())throw new Error("The release kit has no bridge binary");
     chmodSync(binary,0o755);
+    // Standalone kits also carry an `agent-remote` launcher next to the binary; unzip fallbacks drop modes.
+    const launcher=join(folder,COMMAND);if(existsSync(launcher)&&lstatSync(launcher).isFile())chmodSync(launcher,0o755);
     if(await binaryVersion(binary)!==version)throw new Error("The downloaded bridge doesn't run on this computer, or reports another version");
     return {staging,folder,binary};
   }catch(error){removeQuietly(staging);throw error;}
@@ -171,7 +175,8 @@ export async function installRelease(install:Install,version:string,options:{bas
       const kit=await fetchKit(version,root,base,fetcher,options.platform);
       try{removeQuietly(target);renameSync(kit.folder,target);}finally{removeQuietly(kit.staging);}
     }
-    relink(install.link!,root,binary);
+    // Both names point at the new version; one that belongs to another program is left alone.
+    for(const link of [install.link!,join(dirname(install.link!),LEGACY_COMMAND)])relink(link,root,binary);
     prune(root,[version,basename(dirname(install.executable))]);
     return binary;
   }
@@ -182,7 +187,7 @@ export async function installRelease(install:Install,version:string,options:{bas
     try {
       // Documents first, the binary last: an interrupted update leaves the old bridge runnable.
       for(const name of readdirSync(kit.folder)) {
-        if(name==="herdr-remote")continue;
+        if(name===LEGACY_COMMAND)continue;
         const destination=join(folder,name),present=existsSync(destination)?lstatSync(destination):undefined;
         if(!present||present.isFile())renameSync(join(kit.folder,name),destination);
       }
@@ -192,7 +197,18 @@ export async function installRelease(install:Install,version:string,options:{bas
   }
   throw new Error(install.manual??"This bridge can't update itself");
 }
-/** Point ~/.local/bin/herdr-remote at the new version, unless it is something the install script didn't make. */
+/**
+ * An install-script copy links its command under both names when it starts: a bridge that updated itself
+ * from a release before the rename only linked herdr-remote. Never touches a link it didn't make.
+ */
+export function linkCommands(install:Install) {
+  if(install.method!=="kit"||!install.link||!install.root||!install.canInstall)return;
+  for(const link of [install.link,join(dirname(install.link),LEGACY_COMMAND)]) {
+    try{if(lstatSync(link).isSymbolicLink()&&resolve(dirname(link),readlinkSync(link))===install.executable)continue;}catch{}
+    try{relink(link,install.root,install.executable);}catch{}
+  }
+}
+/** Point ~/.local/bin/agent-remote (or herdr-remote) at the new version, unless it is something the install script didn't make. */
 function relink(link:string,root:string,binary:string) {
   let current:string|undefined;
   try{const entry=lstatSync(link);if(!entry.isSymbolicLink())return;current=resolve(dirname(link),readlinkSync(link));}catch{current=undefined;}

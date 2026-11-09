@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Agent Remote Console</title>
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/console.css">
+</head><body>
+<div id="gate" class="gate" hidden>
+  <img src="/assets/icon.svg" alt="" width="56" height="56">
+  <h1>Agent Remote Console</h1>
+  <p id="gate-text" class="muted">Run <code>agent-remote console</code> on this computer and open the link it prints.</p>
+</div>
+<div id="app" class="shell" hidden>
+  <aside id="sidebar" class="sidebar" aria-label="Console">
+    <div class="brand">
+      <img src="/assets/icon.svg" alt="" width="34" height="34">
+      <div class="brand-text">
+        <strong id="host-name">This computer</strong>
+        <span class="host-state"><span id="host-dot" class="dot"></span><span id="host-state">Connecting…</span></span>
+      </div>
+      <button id="drawer-close" type="button" class="button ghost icon-button drawer-only" aria-label="Close menu"><span data-icon="close"></span></button>
+    </div>
+    <a class="button primary wide" href="/remote/" target="agent-remote" id="open-remote"><span data-icon="terminal"></span>Open web remote</a>
+    <nav id="nav" class="nav" aria-label="Sections"></nav>
+    <div class="sidebar-foot"><span id="version"></span><a href="https://crow.sg/apps/ai-agent-remote/docs/" target="_blank" rel="noopener noreferrer">Help</a></div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+  <div id="main" class="main">
+    <header class="topbar">
+      <button id="menu" type="button" class="button ghost icon-button drawer-only" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false"><span data-icon="menu"></span></button>
+      <div class="titles"><h1 id="title">Overview</h1><p id="subtitle"></p></div>
+      <div class="top-actions">
+        <button id="refresh" type="button" class="button ghost icon-button" aria-label="Refresh" title="Refresh"><span data-icon="refresh"></span></button>
+        <a class="button icon-button drawer-only" href="/remote/" target="agent-remote" aria-label="Open web remote" title="Open web remote"><span data-icon="terminal"></span></a>
+      </div>
+    </header>
+    <div id="banners" class="banners"></div>
+    <main id="content" class="content" tabindex="-1"></main>
+  </div>
+</div>
+<dialog id="ask" aria-labelledby="ask-title">
+  <div class="dialog">
+    <h2 id="ask-title"></h2><p id="ask-text"></p>
+    <div class="dialog-actions"><button type="button" class="button" id="ask-no">Cancel</button><button type="button" class="button primary" id="ask-yes">OK</button></div>
+  </div>
+</dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/assets/console.js"></script>
+</body></html>

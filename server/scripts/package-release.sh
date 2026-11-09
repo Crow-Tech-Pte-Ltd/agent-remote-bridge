@@ -23,6 +23,11 @@ if [[ $os == macos && $(uname) == Darwin ]]; then
   codesign --force --sign - "$stage/herdr-remote"
   codesign --verify --strict "$stage/herdr-remote"
 fi
+# The command is agent-remote. The binary keeps its earlier name, herdr-remote, because bridges that update
+# themselves look for it in the kit; this launcher runs it.
+printf '%s\n' '#!/bin/sh' '# agent-remote: runs the AI Agent Remote bridge next to this file (herdr-remote is its earlier name).' \
+  'exec "$(cd "$(dirname "$0")" && pwd -P)/herdr-remote" "$@"' > "$stage/agent-remote"
+chmod 755 "$stage/agent-remote"
 cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 cp "$license" "$stage/BUN-RUNTIME-LICENSE.md"
 cp "release/README-$os.txt" "$stage/README.txt"

@@ -12,14 +12,14 @@ RUN case "$TARGETARCH" in amd64) a=x64 ;; arm64) a=arm64 ;; *) exit 1 ;; esac \
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 ARG VERSION
 LABEL org.opencontainers.image.source="https://github.com/gremia-tech/agent-remote-bridge" \
-      org.opencontainers.image.description="AI Agent Remote bridge and relay (herdr-remote)" \
+      org.opencontainers.image.description="AI Agent Remote bridge and relay (agent-remote)" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="$VERSION"
 # openssl creates the bridge's certificate; git, procps and bash serve the plain-terminal backend.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl git procps bash \
  && rm -rf /var/lib/apt/lists/* && useradd -m -s /bin/bash bridge && mkdir /state && chown bridge:bridge /state && chmod 700 /state
 COPY --from=kit /opt/agent-remote /opt/agent-remote
-RUN ln -s /opt/agent-remote/herdr-remote /usr/local/bin/herdr-remote
+RUN ln -s /opt/agent-remote/herdr-remote /usr/local/bin/herdr-remote && ln -s /opt/agent-remote/herdr-remote /usr/local/bin/agent-remote
 USER bridge
 WORKDIR /home/bridge
 ENV HERDR_REMOTE_DESKTOP_NOTIFY=0

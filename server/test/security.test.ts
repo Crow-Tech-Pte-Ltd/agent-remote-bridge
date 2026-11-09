@@ -139,7 +139,7 @@ test("console: one-time launch, loopback Host only, CSRF on writes, no secrets i
  const directory=join(temp(),"host"),config=await initialize(directory,{url:"https://10.89.0.1:8443",listen:"127.0.0.1",port:8443});
  const state=new State(directory);cleanup.push(()=>state.close());
  const host=createBridge({state,backend,hostname:"127.0.0.1",port:0,tls:{cert:Bun.file(config.certificate),key:Bun.file(config.key)}});cleanup.push(()=>host.close());
- const services={state,config,bridge:host,backend:"herdr",discoverable:false,localRoute:false,localRoutes:()=>[],listen:"127.0.0.1",port:host.server.port!,startedAt:new Date().toISOString(),close(){}} as never;
+ const services={state,config,bridge:host,backend:"herdr",discoverable:false,localRoute:false,localRoutes:()=>[],listen:"127.0.0.1",port:host.server.port!,startedAt:new Date().toISOString(),activity:()=>({phones:0,terminals:0}),close(){}} as never;
  let restarts=0;
  const panel=startConsole({directory,port:18790,services:()=>services,restart:async()=>{restarts++;},version:"test"});cleanup.push(()=>panel.close());
  const origin=`http://127.0.0.1:${panel.port}`,launch=new URL(consoleLaunchURL(directory)).hash.slice("#launch=".length);

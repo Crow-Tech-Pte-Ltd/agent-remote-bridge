@@ -153,3 +153,40 @@ test("nearby pairing requires the code shown on the computer and limits guesses"
   for(let i=0;i<5;i++)expect((await f.request("/v1/pair/nearby/confirm",undefined,"POST",{requestId:second.requestId,code:guess})).status).toBe(403);
   expect((await f.request("/v1/pair/nearby/confirm",undefined,"POST",{requestId:second.requestId,code:secret})).status).toBe(410);
 });
+
+/** Frames on demand, so the test decides how much the phone has received. */
+class FloodBackend extends SizedBackend {
+  emit:(full:boolean)=>void=()=>{};
+  override async terminal(o:Parameters<HostBackend["terminal"]>[0]):Promise<TerminalHandle>{let seq=0,open=true;
+    this.emit=full=>{if(open)o.onFrame({type:"pane_frame",paneId:o.paneId,identityToken:this.identityToken,seq:++seq,full,width:o.cols,height:o.rows,bytes:Buffer.alloc(30_000,full?1:2).toString("base64")});};
+    return {command:async()=>{},close:()=>{open=false;}};
+  }
+}
+test("a phone that acknowledges frames is paced by its acks: past the window the host skips to a full frame",async()=>{
+  const state=new State(directory(),true),backend=new FloodBackend(),bridge=createBridge({state,backend,hostName:"studio"});
+  cleanup.push(()=>state.close());cleanup.push(()=>bridge.close());
+  const base=bridge.server.url.origin,d=state.pair(state.invite("control").code,"Phone");
+  const snapshot=await (await fetch(`${base}/v1/snapshot`,{headers:{Authorization:`Bearer ${d.token}`}})).json() as {capabilities:Record<string,unknown>};
+  expect(snapshot.capabilities.liveAcks).toBe(true);
+  const {ws,messages}=await socket(base,d.token);
+  ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",fit:"host",acks:true}));
+  await Bun.sleep(100);backend.emit(true);
+  for(let i=0;i<20;i++)backend.emit(false);
+  await Bun.sleep(300);
+  const frames=()=>messages.filter(m=>m.type==="pane_frame");
+  // About 40 KB per frame: the window (256 KB) lets only the first few through while nothing is acknowledged.
+  const sent=frames().length;expect(sent).toBeGreaterThan(3);expect(sent).toBeLessThan(10);
+  const received=frames().reduce((n,m)=>n+JSON.stringify(m).length,0);
+  ws.send(JSON.stringify({type:"ack",bytes:received}));await Bun.sleep(100);
+  // Deltas after a gap are useless; the next full frame resumes the stream.
+  backend.emit(false);await Bun.sleep(100);expect(frames().length).toBe(sent);
+  backend.emit(true);await eventually(()=>frames().length===sent+1);
+  expect(frames().at(-1)?.full).toBe(true);
+  backend.emit(false);await eventually(()=>frames().length===sent+2);
+  // Phones that don't acknowledge (older apps) are never paced by acks.
+  ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",fit:"host"}));await Bun.sleep(100);
+  const before=frames().length;backend.emit(true);for(let i=0;i<20;i++)backend.emit(false);
+  await eventually(()=>frames().length===before+21);
+  ws.send(JSON.stringify({type:"ack",bytes:-1}));
+  await eventually(()=>messages.some(m=>m.type==="error"));
+});

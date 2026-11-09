@@ -52,16 +52,34 @@ When the computer is behind NAT or a work firewall, run a relay somewhere both c
 
 ```sh
 # relay server
-herdr-remote relay serve --listen 127.0.0.1 --port 8788      # put HTTPS/WSS in front of /v1/tunnel and /v1/host
-herdr-remote relay profile --public-url wss://relay.example.com > relay.json && chmod 600 relay.json
+agent-remote relay serve --listen 127.0.0.1 --port 8788      # put HTTPS/WSS in front of /v1/tunnel and /v1/host
+agent-remote relay profile --public-url wss://relay.example.com > relay.json && chmod 600 relay.json
 # the computer (copy relay.json there privately)
-herdr-remote init --url https://10.89.0.1:8443 --listen 127.0.0.1 --port 8443
-herdr-remote relay join relay.json
-herdr-remote serve                      # keeps an outbound WSS connection to the relay, reconnecting with backoff
-herdr-remote pair --scope control --qr  # scan on the phone; the invitation carries the relay route
+agent-remote init --url https://10.89.0.1:8443 --listen 127.0.0.1 --port 8443
+agent-remote relay join relay.json
+agent-remote serve                      # keeps an outbound WSS connection to the relay, reconnecting with backoff
+agent-remote pair --scope control --qr  # scan on the phone; the invitation carries the relay route
 ```
 
 The bridge needs only outbound HTTPS (443); `HTTPS_PROXY` is honoured, and a TLS-inspecting proxy's root goes in `NODE_EXTRA_CA_CERTS`. The relay forwards the bridge's own TLS bytes: the phone still pins the bridge certificate from the QR and still presents its device token, so the relay or anything in front of it cannot read or type into terminals. Bridge and phone use separate relay tokens. The bridge URL is the pinned name inside the tunnel, not a routed address; an IP literal with a matching certificate SAN is the tested form on iOS. `relay status`/`relay leave` inspect or remove the profile; `pair --no-relay` makes a direct invitation.
+
+## Console
+
+`serve` and `up` start a local console at `http://127.0.0.1:8790/` (`agent-remote console` prints a one-time link; `--no-console` or `"console": false` turns it off). It never leaves this computer. A sidebar leads to:
+
+- **Overview:** agents that need input or have finished, each opening in the web remote; devices connected now; how phones reach the computer; certificate expiry.
+- **Devices:** phones and browsers with access, presence, rename and revoke.
+- **Pair a phone:** a one-time QR code with a countdown.
+- **Network:** listen address and port, nearby pairing, relay.
+- **Web remote**, **Certificate**, **Updates**, **Settings**.
+
+Each section saves only its own settings. Settings that need a restart stay listed in a banner with Restart now until the bridge restarts. The update mode and the web remote's network settings apply at once.
+
+## Web remote (the app in a browser)
+
+`agent-remote web` prints a one-time link to `http://127.0.0.1:8790/remote/` (the console has an "Open web remote" button too). It does what the phone app does: agents that need attention, projects/tabs/panes, the live terminal with explicit take-control, a message box and special keys, history with find, files, Git status and diffs. Each browser that signs in is a paired device (`agent-remote devices`), read or control, revocable like a phone; signing out or the session ending revokes it.
+
+On your network (opt-in): `agent-remote web password`, then turn on "Serve the web remote on the network" in the console's Web remote section (it applies at once), or set `"webLan": true` (optional `"webPort"` (8791), `"webListen"`, `"webScope"`) and restart. It is HTTPS with the bridge's own certificate, so the browser warns once: compare the certificate's SHA-256 fingerprint with the one in the console's Web remote section before typing the password. Wrong passwords are rate-limited and 20 failures turn LAN sign-in off until restart. The console's settings, pairing and device admin are never served on the network. Browser-facing routes: `protocol/web-remote.md`.
 
 ## Control and recovery
 
@@ -75,14 +93,14 @@ The per-device budget is 2,400 authenticated HTTP requests and 1,200 writes per 
 
 ## Updates
 
-`herdr-remote update` installs the newest release the way this copy was installed: the install script's `~/.local/share/agent-remote-bridge`, Homebrew (`brew upgrade agent-remote-bridge`), or an unzipped kit in a folder you can write. It then restarts the running bridge into it. The process stays the same, so launchd, systemd or the terminal running it carry on, and phones reconnect by themselves. It never uses `sudo`. A copy in a folder that needs administrator rights, a container or a source checkout tells you what to run instead. `herdr-remote update --check` only reports.
+`agent-remote update` installs the newest release the way this copy was installed: the install script's `~/.local/share/agent-remote-bridge`, Homebrew (`brew upgrade agent-remote-bridge`), or an unzipped kit in a folder you can write. It then restarts the running bridge into it. The process stays the same, so launchd, systemd or the terminal running it carry on, and phones reconnect by themselves. It never uses `sudo`. A copy in a folder that needs administrator rights, a container or a source checkout tells you what to run instead. `agent-remote update --check` only reports.
 
 By default a running bridge also updates itself:
 - It checks GitHub a few minutes after starting, then about every 6 hours.
 - It installs a new release in the background.
 - It restarts once no phone has been connected for 2 minutes. With plain terminals it doesn't restart while any are open, because they would close.
 
-Phones with control access see the update and can start it ("Update now"). The local console shows it too. `herdr-remote update --mode notify` only tells phones; `--mode off` stops checking. The same setting is `"updates"` in `config.json`. Every kit is checked against the release's `SHA256SUMS`, and the new binary must report the expected version before it replaces anything.
+Phones with control access see the update and can start it ("Update now"). The local console shows it too. `agent-remote update --mode notify` only tells phones; `--mode off` stops checking. The same setting is `"updates"` in `config.json`. Every kit is checked against the release's `SHA256SUMS`, and the new binary must report the expected version before it replaces anything.
 
 ## Build and verify
 
@@ -106,4 +124,4 @@ Existing configurations default to Herdr. Use `init --backend orca --orca-connec
 
 ## Plain terminals (no Herdr or Orca)
 
-`herdr-remote up --backend plain` (or `init/serve --backend plain`) makes the bridge run its own pseudo-terminals with the owner's login shell; only the selected backend ever runs. Folders given with `--folder DIR` (default: home) become workspaces, each opened with one shell; workspaces created from the phone are remembered in `plain-workspaces.json` in the state directory and reopened on the next start, while the terminals themselves end with the bridge. A headless xterm.js screen per terminal supplies full frames to new viewers and the scrollback for history; one device controls a terminal at a time (explicit takeover), and its size follows the controller. Agents are recognised from the terminal's foreground program (`src/backend/harnesses.ts`) and `agent.start` types the harness command into an idle shell; their status is `unknown` and conversation transcripts are not read. Source: `src/backend/plain/`, tests `test/plain.test.ts`.
+`agent-remote up --backend plain` (or `init/serve --backend plain`) makes the bridge run its own pseudo-terminals with the owner's login shell; only the selected backend ever runs. Folders given with `--folder DIR` (default: home) become workspaces, each opened with one shell; workspaces created from the phone are remembered in `plain-workspaces.json` in the state directory and reopened on the next start, while the terminals themselves end with the bridge. A headless xterm.js screen per terminal supplies full frames to new viewers and the scrollback for history; one device controls a terminal at a time (explicit takeover), and its size follows the controller. Agents are recognised from the terminal's foreground program (`src/backend/harnesses.ts`) and `agent.start` types the harness command into an idle shell; their status is `unknown` and conversation transcripts are not read. Source: `src/backend/plain/`, tests `test/plain.test.ts`.
