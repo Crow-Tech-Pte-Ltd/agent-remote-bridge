@@ -49,10 +49,10 @@ To control it:
 
 Bridges older than 0.1.30 need one manual update: run the install script again, or `brew upgrade agent-remote-bridge`.
 
-This repository moved from `gremia-tech/agent-remote-bridge` on 9 November 2026. Bridges 0.1.30
-to 0.1.32 check the old repository for updates; run the install script once more (or switch
-Homebrew taps: `brew untap gremia-tech/agent-remote-bridge`, then tap this one as above) and
-from 0.1.33 they check here.
+This repository moved from `gremia-tech/agent-remote-bridge` (now archived) on 9 November 2026.
+Bridges 0.1.30 to 0.1.32 check the old repository; it carries the same 0.1.33 as this one, so
+they update once and then check here. If you tapped the old repository with Homebrew, switch
+taps: `brew untap gremia-tech/agent-remote-bridge`, then tap this one as above.
 
 ## Quick start (same Wi-Fi)
 
