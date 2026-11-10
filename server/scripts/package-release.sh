@@ -31,7 +31,6 @@ chmod 755 "$stage/agent-remote"
 cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
 cp "$license" "$stage/BUN-RUNTIME-LICENSE.md"
 cp "release/README-$os.txt" "$stage/README.txt"
-[[ $os == linux ]] && cp release/herdr-remote.service "$stage/"
 zip_name="agent-remote-bridge-$version-$name.zip"
 (cd "$(dirname "$stage")" && rm -f "$out/$zip_name" && zip -qr "$out/$zip_name" agent-remote)
 rm -rf "$(dirname "$stage")"

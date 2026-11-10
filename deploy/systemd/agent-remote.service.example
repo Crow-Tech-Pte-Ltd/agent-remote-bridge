@@ -1,11 +1,12 @@
-# User service: ~/.config/systemd/user/herdr-remote.service
+# User service: ~/.config/systemd/user/agent-remote.service
+# `agent-remote service install --state DIR` writes one like this for you.
 [Unit]
-Description=Herdr Remote paired host
+Description=AI Agent Remote bridge
 After=network-online.target
 [Service]
 Type=simple
 # Replace with absolute paths. Run as the same OS user as Herdr.
-ExecStart=/ABSOLUTE/PATH/herdr-remote serve --state /ABSOLUTE/PATH/private-host-state
+ExecStart=/ABSOLUTE/PATH/agent-remote serve --state /ABSOLUTE/PATH/private-host-state
 Restart=on-failure
 RestartSec=5
 UMask=0077

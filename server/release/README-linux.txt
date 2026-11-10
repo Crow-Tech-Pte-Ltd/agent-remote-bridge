@@ -33,9 +33,11 @@ No Herdr? Start it with plain terminals instead:
    "Show code on computer": a 6-digit code pops up here (notification and terminal).
    Type it on the phone and check the fingerprint matches on both screens.
 
-To keep it running in the background, see herdr-remote.service in this folder:
-  mkdir -p ~/.config/systemd/user && cp herdr-remote.service ~/.config/systemd/user/
-  (edit ExecStart to this folder) then: systemctl --user enable --now herdr-remote
+To start it with this computer from now on (a systemd user service named agent-remote that
+runs this copy with the options you give, for example --backend plain, and updates with it):
+  ./agent-remote service install
+  ./agent-remote service status          ./agent-remote service uninstall
+It starts when you log in; "loginctl enable-linger" makes it start at boot.
 
 Useful:
   ./agent-remote update                  install the newest version now (the bridge also updates

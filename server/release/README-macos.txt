@@ -35,7 +35,14 @@ No Herdr? Start it with plain terminals instead:
    on the Mac (notification and in the terminal). Type it on the phone and check the
    fingerprint matches on both screens. Done; next time it reconnects by itself.
 
-Keep it running while you want to use the phone (and keep the Mac awake). Ctrl+C stops it.
+Ctrl+C stops it. To start it whenever you log in instead (a LaunchAgent named
+sg.crowtech.agent-remote that runs this copy with the options you give, for example
+--backend plain, and updates with it):
+  ./agent-remote service install
+  ./agent-remote service status          ./agent-remote service uninstall
+macOS doesn't let background services use Downloads, Desktop or Documents, so move this
+folder first (for example to ~/Applications/agent-remote). Keep the Mac awake while you
+want to use the phone.
 
 Useful:
   ./agent-remote update                  install the newest version now (the bridge also updates
