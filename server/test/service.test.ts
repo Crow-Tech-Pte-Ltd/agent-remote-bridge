@@ -114,11 +114,25 @@ describe("systemd",()=>{
     expect(()=>installService(f.env,{state:"/h/state",command,path:"/usr/bin"})).toThrow(/process 999/);
     expect(f.mutations()).toEqual([]);expect(existsSync(serviceFile(f.env))).toBe(false);
   });
-  test("a hand-written unit with the same name is left alone",()=>{
+  test("uninstall leaves a hand-written unit with the same name in place",()=>{
     const f=fake(),file=serviceFile(f.env);mkdirSync(join(f.home,".config/systemd/user"),{recursive:true});writeFileSync(file,"[Service]\nExecStart=/mine\n");
-    expect(()=>installService(f.env,{state:"/h/state",command,path:"/usr/bin"})).toThrow(/wasn't written by agent-remote service install/);
     expect(uninstallService(f.env)).toMatchObject({removed:false,kept:expect.any(String)});
     expect(readFileSync(file,"utf8")).toBe("[Service]\nExecStart=/mine\n");
+  });
+  test("install takes over a hand-written unit and keeps a copy in the state folder",()=>{
+    // The owner's computer: a unit written by hand, enabled and running the bridge.
+    const f=fake({units:{"agent-remote":{LoadState:"loaded",ActiveState:"active",MainPID:555,UnitFileState:"enabled"}},lock:555});
+    const file=serviceFile(f.env),state=join(f.home,"state");mkdirSync(join(f.home,".config/systemd/user"),{recursive:true});writeFileSync(file,"[Service]\nExecStart=/mine\n");
+    const result=installService(f.env,{state,command,path:"/usr/bin"});
+    expect(result).toMatchObject({replaced:[`${file} (hand-written)`],kept:join(state,"agent-remote.service.before-service-install")});
+    expect(readFileSync(result.kept!,"utf8")).toBe("[Service]\nExecStart=/mine\n");
+    expect(readFileSync(file,"utf8")).toContain(MARKER);
+    expect(f.mutations()).toEqual(["systemctl --user daemon-reload","systemctl --user enable agent-remote.service","systemctl --user restart agent-remote.service"]);
+  });
+  test("a refused install leaves a hand-written unit untouched",()=>{
+    const f=fake({lock:999}),file=serviceFile(f.env),state=join(f.home,"state");mkdirSync(join(f.home,".config/systemd/user"),{recursive:true});writeFileSync(file,"x");
+    expect(()=>installService(f.env,{state,command,path:"/usr/bin"})).toThrow(/process 999/);
+    expect(readFileSync(file,"utf8")).toBe("x");expect(existsSync(join(state,"agent-remote.service.before-service-install"))).toBe(false);
   });
   test("running it again rewrites and restarts; uninstall removes it",()=>{
     const f=fake();

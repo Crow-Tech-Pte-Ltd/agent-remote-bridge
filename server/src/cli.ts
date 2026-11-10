@@ -268,9 +268,11 @@ async function update(directory:string,v:{check?:boolean;mode?:string}) {
 async function restartRunning(directory:string,to:string):Promise<string> {
   const lock=join(directory,"serve.lock");
   let held:{pid?:number;nonce?:string;version?:string;restartSignal?:string};
-  try{held=JSON.parse(readFileSync(lock,"utf8"));}catch{return "not running";}
-  if(!Number.isInteger(held.pid))return "not running";
-  try{process.kill(held.pid!,0);}catch{return "not running";}
+  // A bridge serving another state folder isn't seen here; it restarts into the update at its next check.
+  const none=`no bridge is running on ${directory} (for another state folder, add --state DIR)`;
+  try{held=JSON.parse(readFileSync(lock,"utf8"));}catch{return none;}
+  if(!Number.isInteger(held.pid))return none;
+  try{process.kill(held.pid!,0);}catch{return none;}
   if(held.version&&!newer(to,held.version))return `already running ${held.version}`;
   if(held.restartSignal!=="SIGUSR2")return "restart the running bridge to finish (it is older than 0.1.30)";
   process.kill(held.pid!,"SIGUSR2");

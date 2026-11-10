@@ -93,6 +93,7 @@ agent-remote service uninstall
 - **No state yet:** it first creates it as `up` does, so the computer is discoverable.
 - **Running it again** changes the options.
 - **An older `herdr-remote` service** is stopped and disabled.
+- **A hand-written `agent-remote` service** is replaced. A copy stays in the state folder.
 - **A bridge running in a terminal:** install refuses until you stop it.
 
 `deploy/systemd/` and `deploy/launchd/` show what it writes, if you'd rather install one by hand.
