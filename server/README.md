@@ -9,7 +9,17 @@ bun install --frozen-lockfile
 bun src/cli.ts up
 ```
 
-`up` creates the state on first run (TLS for `<hostname>.local` plus this computer's private LAN addresses, listening on all interfaces, port 8443), then serves Herdr and advertises the bridge over Bonjour (`_agentremote._tcp`, via `avahi-publish` on Linux or `dns-sd` on macOS). The phone app lists it under **On this network**. Tapping **Pair** makes a 6-digit code pop up on this computer (a Herdr notification, a desktop notification and the terminal running `up`); typing it on the phone pairs a control-scoped device. The code expires after two minutes and five wrong guesses; at most four requests can be pending. The notification also shows the first eight hex digits of the certificate pin, which the phone displays too. Already-paired phones reconnect without any prompt, using the advertised address of the same host ID and pin. `--no-discovery` turns advertising and nearby pairing off; `serve --discoverable` enables them for an existing state directory. A user service template is in `../deploy/systemd/`.
+`up` creates the state on first run (TLS for `<hostname>.local` plus this computer's private LAN addresses, listening on all interfaces, port 8443), then serves Herdr and advertises the bridge over Bonjour (`_agentremote._tcp`, via `avahi-publish` on Linux or `dns-sd` on macOS). The phone app lists it under **On this network**. Tapping **Pair** makes a 6-digit code pop up on this computer (a Herdr notification, a desktop notification and the terminal running `up`); typing it on the phone pairs a control-scoped device. The code expires after two minutes and five wrong guesses; at most four requests can be pending. The notification also shows the first eight hex digits of the certificate pin, which the phone displays too. Already-paired phones reconnect without any prompt, using the advertised address of the same host ID and pin. `--no-discovery` turns advertising and nearby pairing off; `serve --discoverable` enables them for an existing state directory. `agent-remote service install` makes it start with the computer:
+
+- On Linux it is a systemd user service, `agent-remote.service`. It starts at login, or at boot with `loginctl enable-linger`.
+- On macOS it is a LaunchAgent, `sg.crowtech.agent-remote`, which starts at login. It logs to `service.log` in the state folder.
+- The service runs `agent-remote serve` with the `--state` and serve options you give it (for example `--backend plain --folder ~/code` or `--discoverable`) and the PATH of your terminal.
+- With no state yet, the command first creates it as `up` does.
+- It uses the command path that follows self-updates.
+- It replaces an older `herdr-remote` service.
+- It refuses while a bridge started in a terminal holds the state folder.
+
+Run it again to change the options. `agent-remote service status` and `agent-remote service uninstall` do what they say.
 
 Nearby pairing trusts the network for the first contact: someone able to impersonate this computer on the same network during that minute could stand in the middle. The pin fingerprint on both screens lets you notice. Use the QR invitation flow on untrusted networks.
 

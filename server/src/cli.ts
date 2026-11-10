@@ -16,6 +16,7 @@ import { startServices, type Services } from "./services";
 import { startConsole, consoleLaunchURL, openBrowser } from "./console";
 import { setWebPassword } from "./web";
 import { certificateStatus, maintainCertificate, renewCertificate, switchCertificate } from "./certificate";
+import { defaultEnvironment, installService, serveArguments, serviceFile, serviceProgram, serviceStatus, uninstallService } from "./service";
 process.umask(0o077);
 // Release builds stamp their version with --define HERDR_REMOTE_VERSION='"x.y.z"'.
 declare const HERDR_REMOTE_VERSION:string|undefined;
@@ -44,6 +45,11 @@ const usage=`AI Agent Remote bridge host ${version} (agent-remote; herdr-remote 
   agent-remote web password [--clear]   set the password for the web remote on your local network
       (typed twice, or read from standard input); then turn it on in the console or with "webLan": true.
       It is served over HTTPS with the bridge certificate on port 8791 ("webPort", "webListen", "webScope")
+  agent-remote service install [--state DIR] [serve options]   start this bridge with the computer: a systemd
+      user service on Linux, a LaunchAgent on macOS, both named agent-remote, running agent-remote serve with
+      these options and the PATH of this terminal (creates the state folder as up does if there is none).
+      Run it again to change the options. Replaces an older herdr-remote service.
+  agent-remote service status | uninstall
   agent-remote certificate [renew [--days N]]   show expiry, or create a successor that paired phones
       pick up automatically and switch to it after N days (default 14, at the latest a day before expiry)
 Reach this computer from anywhere through a relay you run (it dials out; no inbound port):
@@ -100,16 +106,13 @@ export async function main(args=process.argv.slice(2)) {
   let discover=false;
   if(command==="up") {
     if(!existsSync(join(directory,"config.json"))) {
-      const port=Number(v.port??8443),host=localHostname(),addresses=lanAddresses();
-      if(!Number.isInteger(port) || port<1 || port>65535)throw new Error("--port must be a TCP port number");
-      const created=await initialize(directory,{url:`https://${host}:${port}`,listen:v.listen??"0.0.0.0",port,herdr:v.herdr,session:v.session,
-        hostName:v.name??hostname().split(".")[0],sans:[...addresses,"localhost","127.0.0.1"],backend:v.backend as "herdr"|"orca"|"plain"|undefined,orcaConnection:v["orca-connection"],discoverable:true});
-      new State(directory,false).close();
-      console.error(`Created bridge state in ${directory}\n  address  ${created.url} (also ${addresses.join(", ")||"no LAN address found"})\n  pin      ${certificatePin(created.certificate)}`);
+      await firstRun(directory,v);
+      if(process.stderr.isTTY)console.error("To start the bridge with this computer from now on: agent-remote service install");
     }
     command="serve";discover=!v["no-discovery"];
   }
   if(command==="update"){await update(directory,v);return;}
+  if(command==="service"){await service(directory,parsed.positionals[1],v);return;}
   const config=loadConfig(directory);
   if(command==="console"){console.log(consoleLaunchURL(directory,config.consolePort??8790));return;}
   if(command==="web") {
@@ -214,6 +217,28 @@ export async function main(args=process.argv.slice(2)) {
     else throw new Error("Unknown command. Use --help.");
   }finally{state.close();}
 }
+type FirstRunOptions={port?:string;listen?:string;herdr?:string;session?:string;name?:string;backend?:string;"orca-connection"?:string};
+/** `up` on a computer without bridge state: TLS for <hostname>.local and the LAN addresses, discoverable. */
+async function firstRun(directory:string,v:FirstRunOptions) {
+  const port=Number(v.port??8443),host=localHostname(),addresses=lanAddresses();
+  if(!Number.isInteger(port) || port<1 || port>65535)throw new Error("--port must be a TCP port number");
+  const created=await initialize(directory,{url:`https://${host}:${port}`,listen:v.listen??"0.0.0.0",port,herdr:v.herdr,session:v.session,
+    hostName:v.name??hostname().split(".")[0],sans:[...addresses,"localhost","127.0.0.1"],backend:v.backend as "herdr"|"orca"|"plain"|undefined,orcaConnection:v["orca-connection"],discoverable:true});
+  new State(directory,false).close();
+  console.error(`Created bridge state in ${directory}\n  address  ${created.url} (also ${addresses.join(", ")||"no LAN address found"})\n  pin      ${certificatePin(created.certificate)}`);
+}
+/** `agent-remote service install|uninstall|status` (openspec/changes/add-bridge-service). */
+async function service(directory:string,action:string|undefined,v:FirstRunOptions&Parameters<typeof serveArguments>[1]) {
+  const env=defaultEnvironment();serviceFile(env);
+  if(action==="install") {
+    const command=[...serviceProgram(detectInstall({stamped}),{script:process.argv[1]}),...serveArguments(directory,v)];
+    if(!existsSync(join(directory,"config.json")))await firstRun(directory,v);
+    console.log(JSON.stringify(installService(env,{state:directory,command,path:process.env.PATH||"/usr/local/bin:/usr/bin:/bin"}),null,2));return;
+  }
+  if(action==="uninstall"){console.log(JSON.stringify(uninstallService(env),null,2));return;}
+  if(action==="status"||action===undefined){console.log(JSON.stringify(serviceStatus(env),null,2));return;}
+  throw new Error("service takes install, uninstall or status");
+}
 /** `agent-remote update`: report, set the policy, or install the newest release and restart the running bridge. */
 async function update(directory:string,v:{check?:boolean;mode?:string}) {
   const hasConfig=existsSync(join(directory,"config.json"));
@@ -268,5 +293,5 @@ function summary(status:ReturnType<typeof certificateStatus>) {return {pin:statu
 if(import.meta.main) main().catch(error=>{
   // Our own errors describe the problem without secrets; keep anything else generic.
   const message=error instanceof Error && !/token|secret|BEGIN /i.test(error.message)?error.message:"unexpected failure";
-  console.error(`Herdr Remote could not complete this command: ${message}\nUse --help for usage.`);process.exitCode=1;
+  console.error(`agent-remote could not complete this command: ${message}\nUse --help for usage.`);process.exitCode=1;
 });

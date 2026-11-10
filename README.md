@@ -68,8 +68,8 @@ bun src/cli.ts up
 Open the app: your computer appears under **On this network**. Tap it, choose
 **Show code on computer** and type the 6-digit code that pops up here.
 
-Keep it running with `deploy/systemd/herdr-remote.service` (Linux user service) or
-`deploy/launchd/dev.herdr.remote.plist.example` (macOS LaunchAgent).
+To start it with the computer from now on, run `bun src/cli.ts service install` here, or
+`agent-remote service install` with an installed bridge (see below).
 
 No Herdr? `bun src/cli.ts up --backend plain` runs the bridge's own shells instead: folders
 become workspaces (add more from the phone), and agents started in them (Claude Code,
@@ -77,6 +77,25 @@ Codex, OpenCode, Pi, Gemini, Qwen and others) are recognised. Only the backend y
 
 A single-file binary works the same way:
 `bun build src/cli.ts --compile --outfile herdr-remote`, then `./herdr-remote up`.
+
+## Start with the computer
+
+```sh
+agent-remote service install            # add serve options, e.g. --backend plain or --state DIR
+agent-remote service status
+agent-remote service uninstall
+```
+
+- **Linux:** a systemd user service, `agent-remote.service`. It starts at login, or at boot after `loginctl enable-linger`. Logs: `journalctl --user -u agent-remote`.
+- **macOS:** a LaunchAgent, `sg.crowtech.agent-remote`, which starts at login. It logs to `service.log` in the state folder.
+  - macOS doesn't let background services use Downloads, Desktop or Documents, so keep an unzipped kit elsewhere.
+- **What it runs:** `agent-remote serve` with the options you give and your terminal's PATH, through a path that follows self-updates.
+- **No state yet:** it first creates it as `up` does, so the computer is discoverable.
+- **Running it again** changes the options.
+- **An older `herdr-remote` service** is stopped and disabled.
+- **A bridge running in a terminal:** install refuses until you stop it.
+
+`deploy/systemd/` and `deploy/launchd/` show what it writes, if you'd rather install one by hand.
 
 ## Away from your network
 

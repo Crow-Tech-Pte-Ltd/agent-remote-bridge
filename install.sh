@@ -95,3 +95,4 @@ if [ -z "$on_path" ]; then
   printf 'In this window, run it as  %s\n' "$bin/$command up"
 fi
 printf '\nNext: run  %s up  and pair from the AI Agent Remote app on the same Wi-Fi.\n' "$command"
+printf 'To start it with this computer from then on:  %s service install\n' "$command"
