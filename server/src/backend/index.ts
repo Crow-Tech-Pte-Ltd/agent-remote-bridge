@@ -126,6 +126,7 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
         tabs:state.tabs.map((t:any)=>({tabId:t.tab_id,workspaceId:t.workspace_id,number:t.number,label:t.label,focused:t.focused,paneCount:t.pane_count})),sessions,ts:Date.now()};
     },
     async identity(session,paneId){return (await pane(selected(session),paneId)).identity;},
+    sessionName(session){try{return selected(session);}catch{return session??'';}},
     async output(session,paneId,lines=240) {
       if(!Number.isInteger(lines)||lines<1||lines>2000)throw new BackendError('invalid_lines','lines must be between 1 and 2000',400);
       const name=selected(session),before=await pane(name,paneId);

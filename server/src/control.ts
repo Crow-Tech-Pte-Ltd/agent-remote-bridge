@@ -44,7 +44,8 @@ export class Controls {
   onAcquired:(lease:Lease)=>void=()=>{};
   onReleased:(lease:Lease,reason:string)=>void=()=>{};
   constructor(readonly backend:HostBackend,readonly state:State,ttl=60_000) {this.ttl=ttl;}
-  key(session:string|undefined,pane:string) {return `${session??""}\0${pane}`;}
+  /** Requests that name the default session and requests that name none reach the same pane. */
+  key(session:string|undefined,pane:string) {return `${this.backend.sessionName?.(session)??session??""}\0${pane}`;}
   assertActive(lease:Lease) {
     if(!lease.active || lease.expires<=Date.now() || !this.state.active(lease.deviceId)) {
       this.release(lease,"lease_expired"); throw new BridgeError("lease_expired","Lease expired",410);
@@ -67,18 +68,20 @@ export class Controls {
       if(!this.state.active(device))throw new BridgeError("invalid_credentials","Revoked",401);
       await this.identity(session,pane,token);
       if(!this.state.active(device))throw new BridgeError("invalid_credentials","Revoked",401);
-      const existing=[...this.leases.values()].find(l=>l.active && l.session===session && l.paneId===pane);
+      const existing=[...this.leases.values()].find(l=>l.active && this.key(l.session,l.paneId)===this.key(session,pane));
       if(existing && existing.expires<=Date.now())await this.release(existing,"lease_expired");
       else if(existing && existing.deviceId===device && existing.identityToken===token) {this.assertActive(existing);return existing;}
       else if(existing && !takeover) throw new BridgeError("control_conflict","Controller exists",409);
       if(this.leases.size>=64 || [...this.leases.values()].filter(l=>l.deviceId===device).length>=8)throw new BridgeError("rate_limited","Controller limit",429);
-      // Let a phone-sized pane return to the computer's size before measuring it again.
-      if(existing)await this.release(existing,"control_taken_over");
+      // Handing over: the pane stays at the previous device's size and the new lease inherits the computer's
+      // original size, so the pane is resized once (to the new device), not back to the computer and again.
+      const handedOver=existing?.hostSize;
+      if(existing)await this.release(existing,"control_taken_over",false,true);
       // Attach at the pane's current size: taking control must not reflow the computer's terminal.
       // A pane still at a phone's size remembers the computer's original size.
       const parked=this.parked.get(this.key(session,pane));this.parked.delete(this.key(session,pane));
       const current=await this.backend.paneSize?.(session,pane).catch(()=>undefined)??{cols:80,rows:24};
-      const hostSize=parked?.hostSize??current;
+      const hostSize=parked?.hostSize??handedOver??current;
       const lease:Lease={leaseId:randomUUID(),deviceId:device,paneId:pane,identityToken:token,session,expires:Date.now()+this.ttl,active:true,frames:[],bytes:0,replayable:false,hostSize,size:{...current}};
       this.leases.set(lease.leaseId,lease);
       const pending=this.backend.terminal({session,paneId:pane,expectedIdentityToken:token,control:true,takeover,cols:current.cols,rows:current.rows,
@@ -97,12 +100,20 @@ export class Controls {
         lease.handle=await deadline(pending);
         this.assertActive(lease); await this.identity(session,pane,token);this.assertActive(lease);
         this.onAcquired(lease);return lease;
-      } catch(error) {this.release(lease,"control_failed");throw error;}
+      } catch(error) {
+        const attached=!!lease.handle;this.release(lease,"control_failed");
+        // Not attached, so nothing restores the size: give a handed-over pane back to the computer.
+        if(!attached && (hostSize.cols!==current.cols || hostSize.rows!==current.rows)) {
+          const key=this.key(session,pane);this.parked.set(key,{deviceId:device,session,paneId:pane,hostSize,since:0});void this.restoreParked(key);
+        }
+        throw error;
+      }
     });
   }
   renew(id:string,device:string) {const lease=this.get(id,device);lease.expires=Date.now()+this.ttl;return lease;}
-  /** `park`: the device still views the pane, so keep the phone size until it stops viewing. */
-  release(lease:Lease,reason="released",park=false):Promise<void> {
+  /** `park`: the device still views the pane, so keep the phone size until it stops viewing.
+   *  `handover`: another device takes control now and inherits the computer's size; leave the size alone. */
+  release(lease:Lease,reason="released",park=false,handover=false):Promise<void> {
     if(!lease.active)return Promise.resolve();
     lease.active=false;this.leases.delete(lease.leaseId);
     const handle=lease.handle,resized=lease.size.cols!==lease.hostSize.cols||lease.size.rows!==lease.hostSize.rows;
@@ -111,6 +122,9 @@ export class Controls {
     if(handle&&resized&&park){
       this.parked.set(this.key(lease.session,lease.paneId),{deviceId:lease.deviceId,session:lease.session,paneId:lease.paneId,hostSize:lease.hostSize,since:Date.now()});
       void deadline(scrolled.then(()=>Bun.sleep(100)),4000).catch(()=>{}).finally(()=>handle.close());this.onReleased(lease,reason);return Promise.resolve();
+    }
+    if(handle&&resized&&handover){
+      const done=deadline(scrolled,4000).catch(()=>{}).finally(()=>handle.close());this.onReleased(lease,reason);return done;
     }
     let restored=Promise.resolve();
     if(handle&&resized&&reason!=="identity_changed"){
