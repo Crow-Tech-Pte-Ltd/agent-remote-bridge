@@ -16,7 +16,7 @@ bun src/cli.ts up
 - The service runs `agent-remote serve` with the `--state` and serve options you give it (for example `--backend plain --folder ~/code` or `--discoverable`) and the PATH of your terminal.
 - With no state yet, the command first creates it as `up` does.
 - It uses the command path that follows self-updates.
-- It replaces an older `herdr-remote` service.
+- It replaces an older `herdr-remote` service. It also takes over a hand-written `agent-remote` service, keeping a copy in the state folder.
 - It refuses while a bridge started in a terminal holds the state folder.
 
 Run it again to change the options. `agent-remote service status` and `agent-remote service uninstall` do what they say.

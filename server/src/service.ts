@@ -1,8 +1,8 @@
 // `agent-remote service`: run this bridge as a per-user service that starts with the computer
 // (systemd user unit on Linux, LaunchAgent on macOS). openspec/changes/add-bridge-service.
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { COMMAND, LEGACY_COMMAND, type Install } from "./updates";
 
@@ -130,7 +130,7 @@ export function serviceFile(env:Pick<ServiceEnvironment,"platform"|"home">) {
 }
 const ours=(file:string)=>{try{return readFileSync(file,"utf8").includes(MARKER);}catch{return false;}};
 
-export interface InstallResult {installed:true;service:string;file:string;command:string[];running:boolean;startsAt:"boot"|"login";replaced:string[];next?:string}
+export interface InstallResult {installed:true;service:string;file:string;command:string[];running:boolean;startsAt:"boot"|"login";replaced:string[];kept?:string;next?:string}
 export interface StatusResult {installed:boolean;service:string;file:string;ours:boolean;enabled:boolean;running:boolean;pid:number|null;startsAt?:"boot"|"login";next?:string}
 
 // MARK: systemd
@@ -168,11 +168,18 @@ function writeServiceFile(file:string,text:string) {
 
 export function installService(env:ServiceEnvironment,o:{state:string;command:string[];path:string}):InstallResult {
   const file=serviceFile(env),state=resolve(o.state),replaced:string[]=[];
-  if(existsSync(file)&&!ours(file))throw new Error(`${file} wasn't written by agent-remote service install. Move it away first, then run this again.`);
+  // A hand-written file under the same name is taken over; a copy stays in the state folder.
+  let kept:string|undefined;
+  const keepHandWritten=()=>{
+    if(!existsSync(file)||ours(file))return;
+    mkdirSync(state,{recursive:true,mode:0o700});kept=join(state,`${basename(file)}.before-service-install`);
+    copyFileSync(file,kept);chmodSync(kept,0o600);replaced.push(`${file} (hand-written)`);
+  };
   if(env.platform==="linux") {
     systemdUsable(env);
     const legacy=unitState(env,LEGACY_UNIT),current=unitState(env,UNIT);
     refuseForeignBridge(env,state,[legacy.pid,current.pid]);
+    keepHandWritten();
     // The earlier name, and a temporary unit under the new one, would fight the service for the state folder.
     if(legacy.loaded&&(legacy.active||legacy.enabled)) {
       systemctl(env,...(legacy.transient?["stop"]:["disable","--now"]),`${LEGACY_UNIT}.service`);replaced.push(`${LEGACY_UNIT}.service`);
@@ -185,13 +192,14 @@ export function installService(env:ServiceEnvironment,o:{state:string;command:st
     }
     let running=false;for(let i=0;i<10&&!(running=unitState(env,UNIT).active);i++)env.sleep(500);
     const startsAt=linger(env);
-    return {installed:true,service:`${UNIT}.service`,file,command:o.command,running,startsAt,replaced,...(startsAt==="login"?{next:lingerHint}:{})};
+    return {installed:true,service:`${UNIT}.service`,file,command:o.command,running,startsAt,replaced,...(kept?{kept}:{}),...(startsAt==="login"?{next:lingerHint}:{})};
   }
   // macOS keeps background jobs out of these folders (privacy protection), so the agent would never start.
   const protectedFolder=[o.command[0]!,o.command[1]??"",state].map(path=>["Desktop","Documents","Downloads"].find(name=>path.startsWith(join(env.home,name)+"/"))).find(Boolean);
   if(protectedFolder)throw new Error(`macOS doesn't let background services use ~/${protectedFolder}. Move the bridge (and its state) somewhere else, for example ~/Applications/agent-remote, or install it with the install script, then run this again.`);
   const domain=`gui/${env.uid}`,legacy=agentState(env,LEGACY_LABEL),current=agentState(env,LABEL);
   refuseForeignBridge(env,state,[legacy.pid,current.pid]);
+  keepHandWritten();
   if(legacy.loaded){launchctl(env,"bootout",`${domain}/${LEGACY_LABEL}`);replaced.push(LEGACY_LABEL);}
   // A plist left in LaunchAgents loads again at the next login unless it is disabled.
   if(legacy.loaded||existsSync(join(env.home,"Library/LaunchAgents",`${LEGACY_LABEL}.plist`)))launchctl(env,"disable",`${domain}/${LEGACY_LABEL}`);
@@ -203,7 +211,7 @@ export function installService(env:ServiceEnvironment,o:{state:string;command:st
   for(let i=0;i<10&&result.code!==0;i++){env.sleep(500);result=launchctl(env,"bootstrap",domain,file);}
   if(result.code!==0)throw new Error(`launchctl bootstrap failed: ${result.stderr.trim().split("\n")[0]||"no detail"}. LaunchAgents run in the desktop session: log in on this Mac first.`);
   let running=false;for(let i=0;i<10&&!(running=!!agentState(env,LABEL).pid);i++)env.sleep(500);
-  return {installed:true,service:LABEL,file,command:o.command,running,startsAt:"login",replaced,next:`It starts when you log in to this Mac. Log: ${join(state,"service.log")}`};
+  return {installed:true,service:LABEL,file,command:o.command,running,startsAt:"login",replaced,...(kept?{kept}:{}),next:`It starts when you log in to this Mac. Log: ${join(state,"service.log")}`};
 }
 
 export function uninstallService(env:ServiceEnvironment) {
