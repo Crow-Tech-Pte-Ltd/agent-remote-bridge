@@ -15,6 +15,7 @@ class SizedBackend implements HostBackend {
   async snapshot(){return {agents:[],shellPanes:[{paneId:"p",status:this.status,revision:Math.random()}],workspaces:[],tabs:[],sessions:[],capabilities:{terminal:true},ts:Date.now()};}
   async identity(_s:string|undefined,paneId:string){return {paneId,identityToken:this.identityToken,revision:1};}
   async paneSize(){return {...this.size};}
+  sessionName(session?:string){return session??"main";}
   async output(){return {};}async transcript(){return {};}async git(){return {};}async diff(){return {};}async files(){return {};}async file(){return {};}
   async terminal(o:Parameters<HostBackend["terminal"]>[0]):Promise<TerminalHandle>{this.opened.push({control:o.control,cols:o.cols,rows:o.rows});let open=true;
     queueMicrotask(()=>{if(open)o.onFrame({type:"pane_frame",paneId:o.paneId,identityToken:this.identityToken,seq:1,full:true,width:o.cols,height:o.rows,bytes:Buffer.from("x").toString("base64")});});
@@ -78,6 +79,43 @@ test("control attaches at the computer's size, phone fit is explicit and the siz
   ws.send(JSON.stringify({type:"unobserve"}));
   await eventually(()=>f.backend.opened.slice(before).some(o=>o.control && o.cols===132 && o.rows===41),5000);
 },15000);
+
+test("handing control to another device resizes the pane once and still restores the computer's size",async()=>{
+  const f=fixture(),phone=f.device(),tablet=f.device();
+  const a=await socket(f.base,phone.token);
+  a.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",fit:"host"}));
+  await eventually(()=>a.messages.some(m=>m.type==="pane_frame"));
+  const first=await (await f.request("/v1/panes/p/control",phone.token,"POST",{identityToken:"identity-1"})).json() as {leaseId:string};
+  a.ws.send(JSON.stringify({type:"resize",leaseId:first.leaseId,cols:48,rows:30}));
+  await eventually(()=>f.backend.commands.some(c=>c.type==="terminal.resize"));
+  f.backend.size={cols:48,rows:30};
+  // Without takeover the tablet is refused; with it the phone's lease ends and the tablet attaches at the phone's size.
+  expect((await f.request("/v1/panes/p/control",tablet.token,"POST",{identityToken:"identity-1"})).status).toBe(409);
+  const taken=await f.request("/v1/panes/p/control",tablet.token,"POST",{identityToken:"identity-1",takeover:true});
+  expect(taken.status).toBe(200);const second=await taken.json() as {leaseId:string};
+  await eventually(()=>a.messages.some(m=>m.type==="stream_closed" && m.reason==="control_taken_over"));
+  expect(f.backend.commands.filter(c=>c.type==="terminal.resize")).toEqual([{type:"terminal.resize",cols:48,rows:30}]);
+  expect(f.backend.opened.filter(o=>o.control).at(-1)).toEqual({control:true,cols:48,rows:30});
+  // The tablet fits it to its own screen; releasing gives the computer its original size back.
+  const b=await socket(f.base,tablet.token);
+  b.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",fit:"host",leaseId:second.leaseId}));
+  b.ws.send(JSON.stringify({type:"resize",leaseId:second.leaseId,cols:120,rows:50}));
+  await eventually(()=>f.backend.commands.some(c=>c.type==="terminal.resize" && c.cols===120));
+  f.backend.size={cols:120,rows:50};
+  expect((await f.request(`/v1/control/${second.leaseId}`,tablet.token,"DELETE")).status).toBe(200);
+  // Still viewed on both devices, so it stays parked; once neither views it, the computer gets 132x41 back.
+  a.ws.send(JSON.stringify({type:"unobserve"}));b.ws.send(JSON.stringify({type:"unobserve"}));
+  const before=f.backend.opened.length;
+  await eventually(()=>f.backend.opened.slice(before).some(o=>o.control && o.cols===132 && o.rows===41),5000);
+  expect(f.backend.commands.filter(c=>c.type==="terminal.resize").map(c=>`${c.cols}x${c.rows}`)).toEqual(["48x30","120x50"]);
+},15000);
+
+test("a request naming the default session and one naming none share the pane's one controller",async()=>{
+  const f=fixture(),web=f.device(),phone=f.device();
+  expect((await f.request("/v1/panes/p/control",web.token,"POST",{identityToken:"identity-1"})).status).toBe(200);
+  expect((await f.request("/v1/panes/p/control?session=main",phone.token,"POST",{identityToken:"identity-1"})).status).toBe(409);
+  expect((await f.request("/v1/panes/p/control?session=main",phone.token,"POST",{identityToken:"identity-1",takeover:true})).status).toBe(200);
+});
 
 test("live keystrokes need this socket's lease, are delivered once and never journaled",async()=>{
   const f=fixture(),d=f.device(),other=f.device(),{ws,messages}=await socket(f.base,d.token);

@@ -49,6 +49,8 @@ export interface HostBackend {
   }): Promise<TerminalHandle>;
   /** Exact pseudo-terminal size of a pane, so remote views can match the computer instead of cropping it. */
   paneSize?(session: string | undefined, paneId: string): Promise<{ cols: number; rows: number }>;
+  /** The session a request without one (or with this name) actually reaches, so one pane has one controller. */
+  sessionName?(session: string | undefined): string;
   submitText(session: string | undefined, paneId: string, text: string, submit: boolean, expectedIdentityToken?: string): Promise<unknown>;
   mutate(kind: "workspace.create" | "tab.create" | "pane.split" | "pane.close" | "pane.rename" | "agent.start",
          session: string | undefined, body: Record<string, unknown>): Promise<unknown>;
