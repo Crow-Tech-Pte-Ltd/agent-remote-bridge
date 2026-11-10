@@ -2,27 +2,27 @@
 class AgentRemoteBridge < Formula
   desc "Bridge for the AI Agent Remote app: watch and control coding agents from your phone"
   homepage "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge"
-  version "0.1.34"
+  version "0.1.35"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.34/agent-remote-bridge-0.1.34-macos-arm64.zip"
-      sha256 "ac5445e4afe398366c5e0fefe1f8eae13b035b9ab99a76b39bf96970f6a0fc98"
+      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.35/agent-remote-bridge-0.1.35-macos-arm64.zip"
+      sha256 "ad1597ab3ad52ad90e80ba4dd784db5d8ed80b8a17a16280a57be40ecb625405"
     end
     on_intel do
-      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.34/agent-remote-bridge-0.1.34-macos-x64.zip"
-      sha256 "295778b56678e9fc130c436b5711685fd06ccaf7235bb8096966cb4b910793ab"
+      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.35/agent-remote-bridge-0.1.35-macos-x64.zip"
+      sha256 "69cb13004dd5029cc986d5b8b7f6e26121b5543150aafc715d780658fd74732d"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.34/agent-remote-bridge-0.1.34-linux-arm64.zip"
-      sha256 "b19b4b8ae20f9b59691e989f2d3f075f5fd4661d7c1054f78af42f114435fa1f"
+      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.35/agent-remote-bridge-0.1.35-linux-arm64.zip"
+      sha256 "32a564282452a55c52d9950d7657cee711857f15bd9b34da6c663f3f7f8a1712"
     end
     on_intel do
-      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.34/agent-remote-bridge-0.1.34-linux-x64.zip"
-      sha256 "2a4d39907c23c638684543a2c709683ed1d0aad051c2f17c6722de26ac242c0c"
+      url "https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases/download/server-v0.1.35/agent-remote-bridge-0.1.35-linux-x64.zip"
+      sha256 "df5cef522e09b7da9bf88828ad396b09b4fa7b8d5c79b7adbea6d429a09659ac"
     end
   end
 
