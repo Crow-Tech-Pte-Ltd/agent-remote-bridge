@@ -18,66 +18,30 @@ import { startConsole, consoleLaunchURL, openBrowser } from "./console";
 import { setWebPassword } from "./web";
 import { certificateStatus, maintainCertificate, renewCertificate, switchCertificate } from "./certificate";
 import { defaultEnvironment, installService, serveArguments, serviceFile, serviceProgram, serviceStatus, uninstallService } from "./service";
+import { terminal } from "./ui";
+import { commandHelp, commandNames, overview } from "./help";
+import * as show from "./cli-output";
 process.umask(0o077);
 // Release builds stamp their version with --define HERDR_REMOTE_VERSION='"x.y.z"'.
 declare const HERDR_REMOTE_VERSION:string|undefined;
 const stamped=typeof HERDR_REMOTE_VERSION==="string",version=stamped?HERDR_REMOTE_VERSION:"0.1.0";
-const usage=`AI Agent Remote bridge host ${version} (agent-remote; herdr-remote is its earlier name)
-  agent-remote up [--port 8443] [--name NAME] [--no-discovery] [--backend herdr|orca|plain]
-      One step for a computer on your Wi-Fi: creates TLS material on first run, then serves
-      and advertises this computer so the phone app finds it under Nearby. Pairing needs the
-      code that pops up on this computer.
-  agent-remote init --url https://host.example:8443 [--listen 127.0.0.1] [--port 8443] [--san localhost,127.0.0.1]
-  agent-remote serve [--backend herdr|orca|plain] [--herdr /path/to/herdr] [--session NAME] [--discoverable]
-  Orca init/serve: --backend orca --orca-connection /private/orca-access.txt (local runtime link)
-  Plain terminals (no Herdr or Orca): --backend plain [--folder DIR]... the bridge runs its own shells;
-    folders become workspaces (default: your home folder, then whatever you add from the phone)
-  agent-remote pair [--scope read|control] [--ttl 300] [--uses 1] [--qr] [--url ADDRESS] [--connection PRIVATE_PROFILE.json] [--no-relay]
-      (--ttl up to 2592000 seconds and --uses up to 20, e.g. for an app reviewer's invitation)
-      Works while the bridge runs. The invitation also lists this computer's LAN addresses, so a phone
-      that can't resolve its name (away on a VPN) reaches it by IP. --url: this invitation only, another address
-  agent-remote address [set ADDRESS]   show, or change, the address invitations give phones (e.g. set
-      192.168.1.20 or https://studio.local:8443). Paired phones keep working and learn the computer's
-      addresses when they connect; nothing is re-paired. The certificate must cover the new name.
-  agent-remote devices
-  agent-remote revoke --device UUID
-  agent-remote console              print a one-time link to the running bridge's local web console
-      (serve/up open it in the browser on a desktop; --no-console or "console": false turns it off)
-  agent-remote update [--check] [--mode auto|notify|off]   install the newest release the way this copy was
-      installed (install script, Homebrew or an unzipped kit; never with sudo) and restart the running bridge
-      into it. --check only reports. auto (default): the bridge installs new releases itself and restarts once
-      no phone has been connected for 2 minutes; notify: it only tells phones; off: it never checks.
-  agent-remote web                  print a one-time link to the web remote (the app in a browser) on this computer
-  agent-remote web password [--clear]   set the password for the web remote on your local network
-      (typed twice, or read from standard input); then turn it on in the console or with "webLan": true.
-      It is served over HTTPS with the bridge certificate on port 8791 ("webPort", "webListen", "webScope")
-  agent-remote service install [--state DIR] [serve options]   start this bridge with the computer: a systemd
-      user service on Linux, a LaunchAgent on macOS, both named agent-remote, running agent-remote serve with
-      these options and the PATH of this terminal (creates the state folder as up does if there is none).
-      Run it again to change the options. Replaces an older herdr-remote service.
-  agent-remote service status | uninstall
-  agent-remote certificate [renew [--days N]]   show expiry, or create a successor that paired phones
-      pick up automatically and switch to it after N days (default 14, at the latest a day before expiry)
-Reach this computer from anywhere through a relay you run (it dials out; no inbound port):
-  agent-remote relay join PRIVATE_RELAY.json   then serve/up connect to it and pair invitations use it
-  agent-remote relay status | leave
-  A relayed bridge also answers phones on this network (--no-local-route or "localRoute": false to stop).
-  On the relay server: agent-remote relay serve [--listen 127.0.0.1] [--port 8788] [--state DIR] [--personal-only]
-    and agent-remote relay profile --public-url wss://relay.example.com > PRIVATE_RELAY.json
-    --personal-only admits only phones the bridge lists (a revoked phone is also refused at the relay);
-    agent-remote relay rotate --public-url ... issues new relay secrets (bridges must join again)
-    (relay state defaults to ~/.local/share/herdr-remote-relay; put it behind HTTPS/WSS)
-All commands accept --state DIR (default ~/.local/share/herdr-remote).
-Pairing output contains a short-lived secret. Share it only with the device owner.
-The bridge renews its certificate 30 days before expiry; phones that connect before the switch keep working.`;
 export async function main(args=process.argv.slice(2)) {
   const parsed=parseArgs({args,allowPositionals:true,strict:true,options:{
-    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},check:{type:"boolean"},mode:{type:"string"},clear:{type:"boolean"},
+    backend:{type:"string"},folder:{type:"string",multiple:true},"orca-connection":{type:"string"},state:{type:"string"},url:{type:"string"},listen:{type:"string"},port:{type:"string"},san:{type:"string"},herdr:{type:"string"},session:{type:"string"},name:{type:"string"},scope:{type:"string"},ttl:{type:"string"},uses:{type:"string"},device:{type:"string"},connection:{type:"string"},qr:{type:"boolean"},help:{type:"boolean"},json:{type:"boolean"},discoverable:{type:"boolean"},"no-discovery":{type:"boolean"},"no-relay":{type:"boolean"},"public-url":{type:"string"},"no-console":{type:"boolean"},"no-local-route":{type:"boolean"},"personal-only":{type:"boolean"},days:{type:"string"},check:{type:"boolean"},mode:{type:"string"},clear:{type:"boolean"},all:{type:"boolean"},version:{type:"boolean"},
   }});
   let command=parsed.positionals[0];const v=parsed.values;
+  // People get styled text on a terminal; pipes, files and --json get what scripts have always read.
+  const out=terminal(process.stdout,{json:v.json}),err=terminal(process.stderr,{json:v.json});
   if(v.backend&&!['herdr','orca','plain'].includes(v.backend))throw new Error("--backend must be herdr, orca or plain");
   if(v["orca-connection"])loadOrcaConnection(v["orca-connection"]);
-  if(v.help || !command){console.log(usage);return;}
+  if(v.version||command==="version"){console.log(version);return;}
+  if(command==="help") {
+    const name=parsed.positionals[1];
+    if(name===undefined){overview(out,version);return;}
+    if(!commandHelp(out,name,version))throw new Error(`There is no command ${name}`);return;
+  }
+  if(!command){overview(out,version);return;}
+  if(v.help){if(!commandHelp(out,command,version))overview(out,version);return;}
   if(command==="relay"&&["serve","profile","rotate"].includes(parsed.positionals[1]??"")) {
     const secrets=relaySecrets(resolve(v.state??join(homedir(),".local/share/herdr-remote-relay")),parsed.positionals[1]==="rotate");
     if(parsed.positionals[1]!=="serve") {
@@ -87,7 +51,8 @@ export async function main(args=process.argv.slice(2)) {
     const port=Number(v.port??8788);if(!Number.isInteger(port)||port<1||port>65535)throw new Error("--port must be a TCP port number");
     const relay=createRelay({...secrets,hostname:v.listen??"127.0.0.1",port,sharedPhoneToken:!v["personal-only"]});
     const stop=()=>{relay.close();process.exit(0);};process.once("SIGINT",stop);process.once("SIGTERM",stop);
-    console.log(JSON.stringify({event:"relay_listening",port:relay.server.port}));return;
+    if(out.human){out.ok(`Relay listening on ${v.listen??"127.0.0.1"}:${relay.server.port}`);out.hint(`  ${v["personal-only"]?"Only phones a bridge lists are admitted.":"Phones with the shared token or their own credential are admitted."} Ctrl-C stops it.`);}
+    else console.log(JSON.stringify({event:"relay_listening",port:relay.server.port}));return;
   }
   const directory=resolve(v.state??join(homedir(),".local/share/herdr-remote"));
   const relayFile=join(directory,"relay.json");
@@ -97,39 +62,43 @@ export async function main(args=process.argv.slice(2)) {
       const source=parsed.positionals[2];if(!source)throw new Error("relay join requires the private relay profile file");
       const profile=readRelayProfile(source);privateDirectory(directory);
       writeFileSync(relayFile,JSON.stringify(profile,null,2)+"\n",{mode:0o600});chmodSync(relayFile,0o600);
-      console.log(JSON.stringify({joined:true,relay:new URL(profile.host.url).host,next:"restart serve/up, then pair --scope control --qr"}));return;
+      const result={joined:true,relay:new URL(profile.host.url).host,next:"restart serve/up, then pair --scope control --qr"};
+      if(out.human)show.relay(out,"join",result);else console.log(JSON.stringify(result));return;
     }
-    if(action==="leave"){const present=existsSync(relayFile);if(present)unlinkSync(relayFile);console.log(JSON.stringify({left:present}));return;}
-    if(action==="status"){console.log(JSON.stringify(existsSync(relayFile)?{joined:true,relay:new URL(readRelayProfile(relayFile).host.url).host}:{joined:false}));return;}
+    if(action==="leave"){const present=existsSync(relayFile);if(present)unlinkSync(relayFile);if(out.human)show.relay(out,"leave",{left:present});else console.log(JSON.stringify({left:present}));return;}
+    if(action==="status"){const result=existsSync(relayFile)?{joined:true,relay:new URL(readRelayProfile(relayFile).host.url).host}:{joined:false};if(out.human)show.relay(out,"status",result);else console.log(JSON.stringify(result));return;}
     throw new Error("relay needs join, leave, status, serve or profile");
   }
   if(command==="init") {
     if(!v.url)throw new Error("init requires --url https://hostname:port");
     const config=await initialize(directory,{url:v.url,listen:v.listen,port:v.port?Number(v.port):undefined,herdr:v.herdr,backend:v.backend as "herdr"|"orca"|"plain"|undefined,orcaConnection:v["orca-connection"],session:v.session,hostName:v.name,sans:v.san?.split(",")});
     const state=new State(directory,false);state.close();
-    console.log(JSON.stringify({initialized:true,url:config.url,listen:config.listen,port:config.port,certificateSHA256:certificatePin(config.certificate)}));return;
+    if(out.human)show.initialized(out,{directory,url:config.url,listen:config.listen,port:config.port,pin:certificatePin(config.certificate)});
+    else console.log(JSON.stringify({initialized:true,url:config.url,listen:config.listen,port:config.port,certificateSHA256:certificatePin(config.certificate)}));return;
   }
   let discover=false;
   if(command==="up") {
     if(!existsSync(join(directory,"config.json"))) {
-      await firstRun(directory,v);
-      if(process.stderr.isTTY)console.error("To start the bridge with this computer from now on: agent-remote service install");
+      await firstRun(directory,v,err);
+      if(err.human)err.hint(`Tip: start the bridge with this computer from now on: ${err.command("agent-remote service install")}`);
+      else if(process.stderr.isTTY)console.error("To start the bridge with this computer from now on: agent-remote service install");
     }
     command="serve";discover=!v["no-discovery"];
   }
   if(command==="update"){await update(directory,v);return;}
   if(command==="service"){await service(directory,parsed.positionals[1],v);return;}
   const config=loadConfig(directory);
-  if(command==="console"){console.log(consoleLaunchURL(directory,config.consolePort??8790));return;}
-  if(command==="address"){console.log(JSON.stringify(address(directory,config,parsed.positionals.slice(1)),null,2));return;}
+  if(command==="console"){const url=consoleLaunchURL(directory,config.consolePort??8790);if(out.human)show.link(out,"console",url,false);else console.log(url);return;}
+  if(command==="address"){const result=address(directory,config,parsed.positionals.slice(1));if(out.human)show.address(out,result,parsed.positionals[1]==="set");else console.log(JSON.stringify(result,null,2));return;}
   if(command==="web") {
     if(parsed.positionals[1]==="password") {
-      if(v.clear){await setWebPassword(directory,null);console.log(JSON.stringify({password:false,next:"the web remote is no longer served on the network after the next restart"}));return;}
-      const password=await readPassword();await setWebPassword(directory,password);
-      console.log(JSON.stringify({password:true,next:"turn on \"Web remote on this network\" in the console (or set \"webLan\": true) and restart the bridge"}));return;
+      if(v.clear){await setWebPassword(directory,null);if(out.human)show.webPassword(out,false);else console.log(JSON.stringify({password:false,next:"the web remote is no longer served on the network after the next restart"}));return;}
+      const password=await readPassword(err);await setWebPassword(directory,password);
+      if(out.human)show.webPassword(out,true);else console.log(JSON.stringify({password:true,next:"turn on \"Web remote on this network\" in the console (or set \"webLan\": true) and restart the bridge"}));return;
     }
     if(parsed.positionals[1]!==undefined)throw new Error("web takes password or nothing");
-    const url=consoleLaunchURL(directory,config.consolePort??8790,"/remote/");console.log(url);
+    const url=consoleLaunchURL(directory,config.consolePort??8790,"/remote/");
+    if(out.human)show.link(out,"web remote",url,true);else console.log(url);
     if(process.stdout.isTTY)openBrowser(url,directory);return;
   }
   if(command==="certificate") {
@@ -137,8 +106,9 @@ export async function main(args=process.argv.slice(2)) {
     try {
       if(parsed.positionals[1]==="renew") {
         const days=Number(v.days??14);if(!Number.isFinite(days)||days<0||days>365)throw new Error("--days must be between 0 and 365");
-        console.log(JSON.stringify(summary(await renewCertificate(config,state.hostId,new Date(Date.now()+days*86_400_000)))));
-      } else if(parsed.positionals[1]===undefined)console.log(JSON.stringify(summary(certificateStatus(config,state.hostId))));
+        const result=summary(await renewCertificate(config,state.hostId,new Date(Date.now()+days*86_400_000)));
+        if(out.human)show.certificate(out,result,true);else console.log(JSON.stringify(result));
+      } else if(parsed.positionals[1]===undefined){const result=summary(certificateStatus(config,state.hostId));if(out.human)show.certificate(out,result,false);else console.log(JSON.stringify(result));}
       else throw new Error("certificate takes renew or nothing");
     }finally{state.close();}
     return;
@@ -167,8 +137,9 @@ export async function main(args=process.argv.slice(2)) {
       mode:()=>{try{return updateMode(loadConfig(directory).updates);}catch{return "auto";}},
       setMode:value=>saveConfig(directory,{...loadConfig(directory),updates:value}),
       activity:()=>running?.activity()??{phones:0,terminals:0},
+      ...(err.human?{log:(message:string)=>show.event(err,message)}:{}),
       restart:async target=>{
-        console.error(`Restarting the bridge into ${target}`);
+        if(err.human)show.event(err,`Restarting the bridge into ${target}`);else console.error(`Restarting the bridge into ${target}`);
         console_?.close();console_=undefined;running?.close();running=undefined;unlock();
         try{if(!process.execve)throw new Error("this runtime can't replace itself");process.execve(target,[target,...args],{...process.env,AGENT_REMOTE_RESTARTED:"1"});}
         catch(error){
@@ -177,10 +148,11 @@ export async function main(args=process.argv.slice(2)) {
         }
       }});
     const updates={status:updater.status,update:updater.update,setMode:(value:"auto"|"notify")=>updater.setMode(value)};
-    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});};
+    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});if(err.human)show.event(err,"Restarted with the saved settings","ok");};
+    const say=(message:string)=>err.human?show.event(err,message,"warn"):console.error(message);
     const shutdown=()=>{if(stopping)return;stopping=true;clearInterval(certificateCheck);updater.close();console_?.close();running?.close();unlock();};
     const certificateCheck=setInterval(()=>{void (async()=>{
-      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,message=>console.error(message))&&switchCertificate(current)){console.error("Switched to the renewed bridge certificate.");await restart();console_?.reloadRemote();}}catch(error){console.error(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
+      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,say)&&switchCertificate(current)){say("Switched to the renewed bridge certificate.");await restart();console_?.reloadRemote();}}catch(error){say(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
     })();},6*3_600_000);certificateCheck.unref();
     process.once("SIGINT",()=>{shutdown();process.exit(0);});process.once("SIGTERM",()=>{shutdown();process.exit(0);});
     process.once("exit",()=>{shutdown();});
@@ -192,11 +164,17 @@ export async function main(args=process.argv.slice(2)) {
     };
     try {
       const probe=new State(directory,false),hostId=probe.hostId;probe.close();
-      if(await maintainCertificate(config,hostId,message=>console.error(message)))switchCertificate(config);
+      if(await maintainCertificate(config,hostId,say))switchCertificate(config);
       running=await startServices(directory,flags,discovering,{updates});
       openConsole();
       // A restart into an update keeps the terminal; don't open another browser tab for it.
-      if(console_&&process.stderr.isTTY&&!process.env.AGENT_REMOTE_RESTARTED){const url=console_.launchURL();console.error(`Console: ${url}`);openBrowser(url,directory);}
+      const restarted=!!process.env.AGENT_REMOTE_RESTARTED,launch=console_&&(process.stderr.isTTY||out.human)&&!restarted?console_.launchURL():undefined;
+      if(out.human) {
+        const current=loadConfig(directory),devices=running.state.devices().filter(device=>!device.revokedAt).length;
+        show.ready(out,{version,name:current.hostName,url:current.url,routes:running.localRoutes(),backend:running.backend,session:flags.session??current.session,discoverable:running.discoverable,
+          relay:running.relay&&existsSync(relayFile)?new URL(readRelayProfile(relayFile).host.url).host:undefined,localRoute:running.localRoute,console:launch,opened:!!launch,devices,directory});
+      } else if(launch)console.error(`Console: ${launch}`);
+      if(launch)openBrowser(launch,directory);
       updater.start();
     }catch(error){shutdown();throw error;}
     return;
@@ -220,22 +198,31 @@ export async function main(args=process.argv.slice(2)) {
       const addresses=invitationAddresses(directory,config,url);
       const invitation={version:connection?2:1,url,certificateSHA256:certificatePin(config.certificate),...invite,...(addresses.length?{addresses}:{}),...(connection?{connection}:{})};
       const uri=`herdr-remote://pair?data=${Buffer.from(JSON.stringify(invitation)).toString("base64url")}`;
-      console.log(v.json?JSON.stringify(invitation):uri);
-      if(v.qr)console.log(await QRCode.toString(uri,{type:"terminal",small:true,errorCorrectionLevel:"M"}));
-    } else if(command==="devices")console.log(JSON.stringify(state.devices(),null,2));
-    else if(command==="revoke") {if(!v.device)throw new Error("revoke requires --device UUID");console.log(JSON.stringify({revoked:state.revoke(v.device),deviceId:v.device}));}
+      const qr=v.qr?await QRCode.toString(uri,{type:"terminal",small:true,errorCorrectionLevel:"M"}):undefined;
+      if(out.human)show.invitation(out,{uri,scope,uses:Number(v.uses??1),expiresAt:invite.expiresAt,url,addresses,relay:relayed?new URL(readRelayProfile(relayFile).host.url).host:undefined,qr});
+      else{console.log(v.json?JSON.stringify(invitation):uri);if(qr)console.log(qr);}
+    } else if(command==="devices"){const devices=state.devices();if(out.human)show.devices(out,devices,!!v.all);else console.log(JSON.stringify(devices,null,2));}
+    else if(command==="revoke") {
+      if(!v.device)throw new Error("revoke requires --device ID");
+      // The full ID, or the 8 characters devices shows when no other device starts with them.
+      const id=v.device.trim().toLowerCase(),devices=state.devices(),matches=devices.filter(device=>device.id===id||(id.length>=8&&device.id.startsWith(id)));
+      if(matches.length>1)throw new Error("More than one device starts with that ID; give more of it");
+      const device=matches[0],done=device?state.revoke(device.id):false;
+      if(out.human)show.revoked(out,device,done);else console.log(JSON.stringify({revoked:done,deviceId:device?.id??v.device}));
+    }
     else throw new Error("Unknown command. Use --help.");
   }finally{state.close();}
 }
 type FirstRunOptions={port?:string;listen?:string;herdr?:string;session?:string;name?:string;backend?:string;"orca-connection"?:string};
 /** `up` on a computer without bridge state: TLS for <hostname>.local and the LAN addresses, discoverable. */
-async function firstRun(directory:string,v:FirstRunOptions) {
+async function firstRun(directory:string,v:FirstRunOptions,t=terminal(process.stderr)) {
   const port=Number(v.port??8443),host=localHostname(),addresses=lanAddresses();
   if(!Number.isInteger(port) || port<1 || port>65535)throw new Error("--port must be a TCP port number");
   const created=await initialize(directory,{url:`https://${host}:${port}`,listen:v.listen??"0.0.0.0",port,herdr:v.herdr,session:v.session,
     hostName:v.name??hostname().split(".")[0],sans:[...addresses,"localhost","127.0.0.1"],backend:v.backend as "herdr"|"orca"|"plain"|undefined,orcaConnection:v["orca-connection"],discoverable:true});
   new State(directory,false).close();
-  console.error(`Created bridge state in ${directory}\n  address  ${created.url} (also ${addresses.join(", ")||"no LAN address found"})\n  pin      ${certificatePin(created.certificate)}`);
+  if(t.human)show.firstRun(t,{directory,url:created.url,addresses,pin:certificatePin(created.certificate)});
+  else console.error(`Created bridge state in ${directory}\n  address  ${created.url} (also ${addresses.join(", ")||"no LAN address found"})\n  pin      ${certificatePin(created.certificate)}`);
 }
 /** `agent-remote address [set ADDRESS]` (openspec/changes/reach-computers-from-anywhere). Only on request:
  *  it changes what new invitations say, never revokes or re-pairs a phone. */
@@ -249,38 +236,42 @@ function address(directory:string,config:Config,args:string[]) {
     next:changed?"New invitations use this address now. Paired phones keep their pairing; a phone that can't reach the computer at all needs agent-remote pair.":"nothing to change"};
 }
 /** `agent-remote service install|uninstall|status` (openspec/changes/add-bridge-service). */
-async function service(directory:string,action:string|undefined,v:FirstRunOptions&Parameters<typeof serveArguments>[1]) {
-  const env=defaultEnvironment();serviceFile(env);
+async function service(directory:string,action:string|undefined,v:FirstRunOptions&Parameters<typeof serveArguments>[1]&{json?:boolean}) {
+  const env=defaultEnvironment(),out=terminal(process.stdout,{json:v.json});serviceFile(env);
+  const report=(kind:string,result:Parameters<typeof show.service>[2])=>{if(out.human)show.service(out,kind,result);else console.log(JSON.stringify(result,null,2));};
   if(action==="install") {
     const command=[...serviceProgram(detectInstall({stamped}),{script:process.argv[1]}),...serveArguments(directory,v)];
-    if(!existsSync(join(directory,"config.json")))await firstRun(directory,v);
-    console.log(JSON.stringify(installService(env,{state:directory,command,path:process.env.PATH||"/usr/local/bin:/usr/bin:/bin"}),null,2));return;
+    if(!existsSync(join(directory,"config.json")))await firstRun(directory,v,terminal(process.stderr,{json:v.json}));
+    report("install",installService(env,{state:directory,command,path:process.env.PATH||"/usr/local/bin:/usr/bin:/bin"}));return;
   }
-  if(action==="uninstall"){console.log(JSON.stringify(uninstallService(env),null,2));return;}
-  if(action==="status"||action===undefined){console.log(JSON.stringify(serviceStatus(env),null,2));return;}
+  if(action==="uninstall"){report("uninstall",uninstallService(env));return;}
+  if(action==="status"||action===undefined){report("status",serviceStatus(env));return;}
   throw new Error("service takes install, uninstall or status");
 }
 /** `agent-remote update`: report, set the policy, or install the newest release and restart the running bridge. */
-async function update(directory:string,v:{check?:boolean;mode?:string}) {
-  const hasConfig=existsSync(join(directory,"config.json"));
+async function update(directory:string,v:{check?:boolean;mode?:string;json?:boolean}) {
+  const hasConfig=existsSync(join(directory,"config.json")),out=terminal(process.stdout,{json:v.json}),err=terminal(process.stderr,{json:v.json});
   if(v.mode!==undefined) {
     if(!["auto","notify","off"].includes(v.mode))throw new Error("--mode must be auto, notify or off");
     if(!hasConfig)throw new Error(`No bridge state in ${directory}. Run init or up first, or pass --state.`);
     saveConfig(directory,{...loadConfig(directory),updates:v.mode as UpdateMode});
-    console.log(JSON.stringify({mode:v.mode,next:v.mode==="off"?"the bridge no longer checks for updates":"the running bridge uses it at its next check"}));return;
+    if(out.human)show.updateMode(out,v.mode);
+    else console.log(JSON.stringify({mode:v.mode,next:v.mode==="off"?"the bridge no longer checks for updates":"the running bridge uses it at its next check"}));return;
   }
   const install=detectInstall({stamped});
   let latest:string|undefined,problem:string|undefined;
   if(install.method!=="source"){try{latest=await latestRelease();}catch(error){problem=error instanceof Error?error.message:"Couldn't check for updates";}}
   const report={version,method:install.method,mode:hasConfig?updateMode(loadConfig(directory).updates):"auto",latest:latest??null,
     available:!!latest&&newer(latest,version),canInstall:install.canInstall,...(install.manual?{manual:install.manual}:{}),...(problem?{error:problem}:{})};
-  if(v.check){console.log(JSON.stringify(report,null,2));return;}
+  if(v.check){if(out.human)show.updateReport(out,report);else console.log(JSON.stringify(report,null,2));return;}
   if(!install.canInstall)throw new Error(install.manual??"This bridge can't update itself");
   if(!latest)throw new Error(problem??"Couldn't check for updates");
   let to=version;
-  if(report.available){console.error(`Updating the bridge from ${version} to ${latest}…`);await installRelease(install,latest,{log:message=>console.error(message)});to=latest;}
-  else console.error(`This bridge (${version}) is the newest release.`);
-  console.log(JSON.stringify({updated:report.available,from:version,to,method:install.method,running:await restartRunning(directory,to)}));
+  const say=(message:string)=>err.human?err.step(message):console.error(message);
+  if(report.available){say(`Updating the bridge from ${version} to ${latest}…`);await installRelease(install,latest,{log:say});to=latest;}
+  else if(!out.human)console.error(`This bridge (${version}) is the newest release.`);
+  const result={updated:report.available,from:version,to,method:install.method,running:await restartRunning(directory,to)};
+  if(out.human)show.updated(out,result);else console.log(JSON.stringify(result));
 }
 /**
  * Ask a bridge serving this state folder to restart into `to`. Only bridges that advertise the signal in their
@@ -304,17 +295,21 @@ async function restartRunning(directory:string,to:string):Promise<string> {
   return "asked the running bridge to restart; check its log";
 }
 /** A password from the terminal (not echoed, typed twice) or the first line of standard input. */
-async function readPassword():Promise<string> {
+async function readPassword(t=terminal(process.stderr)):Promise<string> {
   if(!process.stdin.isTTY){const text=await new Response(Bun.stdin.stream()).text();return text.split(/\r?\n/)[0]??"";}
   const { spawnSync }=await import("node:child_process"),{ createInterface }=await import("node:readline");
   const ask=(prompt:string)=>new Promise<string>(resolve=>{process.stderr.write(prompt);const rl=createInterface({input:process.stdin,terminal:false});rl.once("line",line=>{rl.close();process.stderr.write("\n");resolve(line);});});
   spawnSync("stty",["-echo"],{stdio:"inherit"});
-  try{const first=await ask("Web remote password (10+ characters): "),second=await ask("Again: ");if(first!==second)throw new Error("The passwords differ");return first;}
+  const label=(text:string,detail="")=>t.human?`${t.c.accent("?")} ${t.c.bold(text)}${detail?t.c.dim(` ${detail}`):""} `:`${text}${detail?` ${detail}`:""}: `;
+  try{const first=await ask(label("Web remote password","(10 or more characters)")),second=await ask(label("Type it again"));if(first!==second)throw new Error("The passwords differ");return first;}
   finally{spawnSync("stty",["echo"],{stdio:"inherit"});}
 }
 function summary(status:ReturnType<typeof certificateStatus>) {return {pin:status.pin,expiresAt:status.expiresAt,...(status.next?{next:{pin:status.next.pin,switchAt:status.next.switchAt}}:{})};}
 if(import.meta.main) main().catch(error=>{
   // Our own errors describe the problem without secrets; keep anything else generic.
   const message=error instanceof Error && !/token|secret|BEGIN /i.test(error.message)?error.message:"unexpected failure";
-  console.error(`agent-remote could not complete this command: ${message}\nUse --help for usage.`);process.exitCode=1;
+  const err=terminal(process.stderr,{json:process.argv.includes("--json")}),command=process.argv.slice(2).find(arg=>!arg.startsWith("-"));
+  if(err.human)show.failure(err,message,command&&commandNames.includes(command)?command:undefined);
+  else console.error(`agent-remote could not complete this command: ${message}\nUse --help for usage.`);
+  process.exitCode=1;
 });

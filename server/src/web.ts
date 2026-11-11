@@ -14,7 +14,8 @@ import type { SocketData } from "./app";
 import type { Device, Scope } from "./state";
 import { loadConfig, certificatePin } from "./config";
 import { lanAddresses } from "./discovery";
-import { remoteIcon, remotePage, remoteScript, remoteStyles, xtermScript, xtermStyles } from "./web/assets";
+import { say } from "./cli-output";
+import { appIcon, remotePage, remoteScript, remoteStyles, xtermScript, xtermStyles } from "./web/assets";
 
 const IDLE_MS=2*3_600_000,ABSOLUTE_MS=12*3_600_000,MAX_SESSIONS=8,MAX_BODY=65_536,COOKIE="hmr_remote",LAN_COOKIE="__Host-hmr_remote";
 const passwordFile=(directory:string)=>join(directory,"web-password.json");
@@ -123,10 +124,10 @@ export function createRemote(options:RemoteOptions) {
       hostName:services?.config.hostName,version:options.version};
   }
   function assets(path:string):Response|undefined {
-    const files:Record<string,[string,string]>={"/remote/assets/app.js":[remoteScript,"text/javascript"],"/remote/assets/app.css":[remoteStyles,"text/css"],
-      "/remote/assets/xterm.js":[xtermScript,"text/javascript"],"/remote/assets/xterm.css":[xtermStyles,"text/css"],"/remote/assets/icon.svg":[remoteIcon,"image/svg+xml"]};
+    const files:Record<string,[string|Uint8Array,string]>={"/remote/assets/app.js":[remoteScript,"text/javascript; charset=utf-8"],"/remote/assets/app.css":[remoteStyles,"text/css; charset=utf-8"],
+      "/remote/assets/xterm.js":[xtermScript,"text/javascript; charset=utf-8"],"/remote/assets/xterm.css":[xtermStyles,"text/css; charset=utf-8"],"/remote/assets/icon.png":[appIcon,"image/png"]};
     const file=files[path];if(!file)return undefined;
-    return new Response(file[0],{headers:{"Content-Type":`${file[1]}; charset=utf-8`,"Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"}});
+    return new Response(file[0],{headers:{"Content-Type":file[1],"Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"}});
   }
   const CSP="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
   // LAN sign-in: 5 tries per address per minute; 20 failures in 10 minutes turns it off until restart.
@@ -138,7 +139,7 @@ export function createRemote(options:RemoteOptions) {
   }
   function wrongPassword() {
     const now=Date.now();failures=failures.filter(t=>now-t<600_000);failures.push(now);
-    if(failures.length>=20){lanLocked=true;console.error("Web remote sign-in on the local network turned off after repeated wrong passwords. Restart the bridge to allow it again.");}
+    if(failures.length>=20){lanLocked=true;say("Web remote sign-in on the local network turned off after repeated wrong passwords. Restart the bridge to allow it again.","warn");}
     fail(401,"wrong_password","Wrong password.");
   }
 
@@ -230,7 +231,7 @@ export function createRemote(options:RemoteOptions) {
   function reload() {
     let config;try{config=loadConfig(directory);}catch{return;}
     const wanted=config.webLan===true&&hasWebPassword(directory);
-    if(config.webLan&&!wanted)console.error("The web remote is not served on the local network: set a password with agent-remote web password.");
+    if(config.webLan&&!wanted)say("The web remote is not served on the local network: set a password with agent-remote web password.","warn");
     const port=options.lanPort??config.webPort??8791,hostname=config.webListen??"0.0.0.0";
     let mtime=0;try{mtime=lstatSync(config.certificate).mtimeMs;}catch{}
     const signature=JSON.stringify({wanted,port,hostname,certificate:config.certificate,mtime});
@@ -248,8 +249,8 @@ export function createRemote(options:RemoteOptions) {
           return handle(request,server,"lan",`https://${host}`,server.requestIP(request)?.address??"unknown");
         }});
       lan={server,signature};
-      console.error(`Web remote on the local network: https://<this computer's address>:${server.port}/remote/ (certificate ${certificatePin(config.certificate).slice(0,8)}…)`);
-    }catch(error){console.error(`The web remote could not listen on ${hostname}:${port}: ${(error as NodeJS.ErrnoException).code??"error"}`);}
+      say(`Web remote on the local network: https://<this computer's address>:${server.port}/remote/ (certificate ${certificatePin(config.certificate).slice(0,8)}…)`,"ok");
+    }catch(error){say(`The web remote could not listen on ${hostname}:${port}: ${(error as NodeJS.ErrnoException).code??"error"}`,"fail");}
   }
   reload();
   return {handle,websocket,reload,

@@ -1,3 +1,4 @@
+import { say } from "./cli-output";
 import type { ServerWebSocket } from "bun";
 import { randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { HostBackend, TerminalHandle, TerminalFrame } from "./backend/types";
@@ -216,7 +217,7 @@ export function createBridge(options:BridgeOptions) {
   function nearbyLocked(){
     if(nearbyDisabled)return true;
     const now=Date.now();nearbyFailures=nearbyFailures.filter(t=>now-t<600_000);
-    if(nearbyFailures.length>=20){nearbyDisabled=true;nearby.clear();console.error("Nearby pairing turned off after repeated wrong codes. Restart the bridge to allow it again.");}
+    if(nearbyFailures.length>=20){nearbyDisabled=true;nearby.clear();say("Nearby pairing turned off after repeated wrong codes. Restart the bridge to allow it again.","warn");}
     return nearbyDisabled;
   }
   async function mutation(device:Device,requestId:unknown,operationKey:unknown,dispatch:()=>Promise<unknown>) {
