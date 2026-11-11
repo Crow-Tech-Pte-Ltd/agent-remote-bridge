@@ -11,7 +11,7 @@ import { loadOrcaConnection } from "./backend/orca/connection";
 import { randomUUID } from "node:crypto";
 import { connectionProfile, type HostConnection } from "./connection";
 import { lanAddresses, localHostname } from "./discovery";
-import { addressURL, certificateNames, invitationAddresses, requireCovered } from "./addresses";
+import { addressReport, addressURL, invitationAddresses, requireCovered, setAddress } from "./addresses";
 import { createRelay, readRelayProfile, relayProfileFor, relaySecrets } from "./relay";
 import { startServices, type Services } from "./services";
 import { startConsole, consoleLaunchURL, openBrowser } from "./console";
@@ -21,6 +21,7 @@ import { defaultEnvironment, installService, serveArguments, serviceFile, servic
 import { terminal } from "./ui";
 import { commandHelp, commandNames, overview } from "./help";
 import * as show from "./cli-output";
+import { record } from "./activity";
 process.umask(0o077);
 // Release builds stamp their version with --define HERDR_REMOTE_VERSION='"x.y.z"'.
 declare const HERDR_REMOTE_VERSION:string|undefined;
@@ -148,11 +149,11 @@ export async function main(args=process.argv.slice(2)) {
         }
       }});
     const updates={status:updater.status,update:updater.update,setMode:(value:"auto"|"notify")=>updater.setMode(value)};
-    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});if(err.human)show.event(err,"Restarted with the saved settings","ok");};
+    const restart=async()=>{running?.close();running=undefined;running=await startServices(directory,flags,discovering,{updates});record(directory,{kind:"restarted"});if(err.human)show.event(err,"Restarted with the saved settings","ok");};
     const say=(message:string)=>err.human?show.event(err,message,"warn"):console.error(message);
     const shutdown=()=>{if(stopping)return;stopping=true;clearInterval(certificateCheck);updater.close();console_?.close();running?.close();unlock();};
     const certificateCheck=setInterval(()=>{void (async()=>{
-      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,say)&&switchCertificate(current)){say("Switched to the renewed bridge certificate.");await restart();console_?.reloadRemote();}}catch(error){say(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
+      try{const current=loadConfig(directory);if(await maintainCertificate(current,running!.state.hostId,say)&&switchCertificate(current)){say("Switched to the renewed bridge certificate.");record(directory,{kind:"certificate_renewed"});await restart();console_?.reloadRemote();}}catch(error){say(`Certificate check failed: ${error instanceof Error?error.message:"unknown"}`);}
     })();},6*3_600_000);certificateCheck.unref();
     process.once("SIGINT",()=>{shutdown();process.exit(0);});process.once("SIGTERM",()=>{shutdown();process.exit(0);});
     process.once("exit",()=>{shutdown();});
@@ -166,6 +167,9 @@ export async function main(args=process.argv.slice(2)) {
       const probe=new State(directory,false),hostId=probe.hostId;probe.close();
       if(await maintainCertificate(config,hostId,say))switchCertificate(config);
       running=await startServices(directory,flags,discovering,{updates});
+      // Recent activity starts with this run: a new version since the last run reads as an update.
+      const before=running.state.metadata("bridgeVersion");running.state.setMetadata("bridgeVersion",version);
+      record(directory,before&&before!==version?{kind:"updated",detail:`${before} → ${version}`}:{kind:"started",detail:version});
       openConsole();
       // A restart into an update keeps the terminal; don't open another browser tab for it.
       const restarted=!!process.env.AGENT_REMOTE_RESTARTED,launch=console_&&(process.stderr.isTTY||out.human)&&!restarted?console_.launchURL():undefined;
@@ -227,13 +231,9 @@ async function firstRun(directory:string,v:FirstRunOptions,t=terminal(process.st
 /** `agent-remote address [set ADDRESS]` (openspec/changes/reach-computers-from-anywhere). Only on request:
  *  it changes what new invitations say, never revokes or re-pairs a phone. */
 function address(directory:string,config:Config,args:string[]) {
-  const report=(current:Config)=>({url:current.url,addresses:invitationAddresses(directory,current),certificateCovers:certificateNames(current.certificate)});
-  if(args.length===0)return report(config);
+  if(args.length===0)return addressReport(directory,config);
   if(args[0]!=="set"||args.length!==2)throw new Error("address takes nothing, or set ADDRESS");
-  const url=addressURL(args[1]!,config.port);requireCovered(url,config.certificate);
-  const changed=url!==config.url;if(changed)saveConfig(directory,{...config,url});
-  return {...report(loadConfig(directory)),...(changed?{previous:config.url}:{}),changed,
-    next:changed?"New invitations use this address now. Paired phones keep their pairing; a phone that can't reach the computer at all needs agent-remote pair.":"nothing to change"};
+  return setAddress(directory,config,args[1]!);
 }
 /** `agent-remote service install|uninstall|status` (openspec/changes/add-bridge-service). */
 async function service(directory:string,action:string|undefined,v:FirstRunOptions&Parameters<typeof serveArguments>[1]&{json?:boolean}) {

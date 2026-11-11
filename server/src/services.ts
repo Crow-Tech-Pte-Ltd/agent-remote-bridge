@@ -16,6 +16,7 @@ import { connectRelay, readRelayProfile } from "./relay";
 import { certificateStatus } from "./certificate";
 import { terminal } from "./ui";
 import * as show from "./cli-output";
+import { record } from "./activity";
 
 export interface ServiceFlags {backend?:string;folder?:string[];"orca-connection"?:string;herdr?:string;session?:string;listen?:string;port?:string;"no-discovery"?:boolean;"no-local-route"?:boolean;json?:boolean;}
 export interface Services {
@@ -51,7 +52,13 @@ export async function startServices(directory:string,v:ServiceFlags,discover:boo
       ...(!loopback(listen)?{localRoutes:()=>localRoutes()}:{}),...(extras.updates?{updates:extras.updates}:{})});
     // On a terminal the CLI prints a ready block and readable events; logs and pipes keep the JSON lines.
     const out=terminal(process.stdout,{json:v.json}),err=terminal(process.stderr,{json:v.json});
-    const relay=profile&&bridge.relayServer?connectRelay({profile,target:{host:"127.0.0.1",port:bridge.relayServer.port!},log:event=>err.human?show.relayEvent(err,event):console.error(JSON.stringify(event)),
+    // The console's Recent activity notes when the relay comes up and when it drops, not every retry.
+    let relayUp=false;
+    const noteRelay=(event:Record<string,unknown>)=>{
+      if(event.event==="relay_connected"&&!relayUp){relayUp=true;record(directory,{kind:"relay_connected",detail:String(event.url??"")});}
+      else if(event.event==="relay_disconnected"&&relayUp){relayUp=false;record(directory,{kind:"relay_lost"});}
+    };
+    const relay=profile&&bridge.relayServer?connectRelay({profile,target:{host:"127.0.0.1",port:bridge.relayServer.port!},log:event=>{noteRelay(event);if(err.human)show.relayEvent(err,event);else console.error(JSON.stringify(event));},
       credentials:()=>state.relayDigests(),onHello:revision=>{relaySupportsCredentials=revision>=2;state.setMetadata("relayRevision",String(revision));}}):undefined;
     const advertisement=discover?advertise({url:config.url,hostId:state.hostId,certificateSHA256:pin,name:config.hostName,port:bridge.server.port??port,pairing:discover},message=>err.human?show.event(err,message,"warn"):console.error(message)):undefined;
     if(!out.human)console.log(JSON.stringify({event:"listening",url:config.url,hostId:state.hostId,protocolVersion:1,discoverable:discover,relay:!!relay,localRoute}));

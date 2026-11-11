@@ -6,7 +6,7 @@ import { X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
-import { endpoint, type Config } from "./config";
+import { endpoint, loadConfig, saveConfig, type Config } from "./config";
 import { lanAddresses } from "./discovery";
 
 const loopback=(address:string)=>["127.0.0.1","localhost","::1"].includes(address)||address.startsWith("127.");
@@ -46,4 +46,15 @@ export function requireCovered(url:string,certificate:string) {
     return entry===host||(entry.startsWith("*.")&&host.endsWith(entry.slice(1))&&host.split(".").length===entry.split(".").length);
   });
   if(!covered)throw new Error(`The bridge certificate doesn't cover ${host}, so phones would refuse it. It covers: ${names.join(", ")}`);
+}
+/** What `agent-remote address` and the console show: the saved address, the LAN hints and the names the certificate covers. */
+export function addressReport(directory:string,config:Config) {
+  return {url:config.url,addresses:invitationAddresses(directory,config),certificateCovers:certificateNames(config.certificate)};
+}
+/** `agent-remote address set` and the console's Change address: validated, saved, effective for new invitations at once. */
+export function setAddress(directory:string,config:Config,input:string) {
+  const url=addressURL(input,config.port);requireCovered(url,config.certificate);
+  const changed=url!==config.url;if(changed)saveConfig(directory,{...config,url});
+  return {...addressReport(directory,loadConfig(directory)),...(changed?{previous:config.url}:{}),changed,
+    next:changed?"New invitations use this address now. Paired phones keep their pairing; a phone that can't reach the computer at all needs agent-remote pair.":"nothing to change"};
 }

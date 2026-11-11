@@ -15,7 +15,7 @@ import type { Device, Scope } from "./state";
 import { loadConfig, certificatePin } from "./config";
 import { lanAddresses } from "./discovery";
 import { say } from "./cli-output";
-import { appIcon, remotePage, remoteScript, remoteStyles, xtermScript, xtermStyles } from "./web/assets";
+import { agentMarks, appIcon, remotePage, remoteScript, remoteStyles, xtermScript, xtermStyles } from "./web/assets";
 
 const IDLE_MS=2*3_600_000,ABSOLUTE_MS=12*3_600_000,MAX_SESSIONS=8,MAX_BODY=65_536,COOKIE="hmr_remote",LAN_COOKIE="__Host-hmr_remote";
 const passwordFile=(directory:string)=>join(directory,"web-password.json");
@@ -125,7 +125,7 @@ export function createRemote(options:RemoteOptions) {
   }
   function assets(path:string):Response|undefined {
     const files:Record<string,[string|Uint8Array,string]>={"/remote/assets/app.js":[remoteScript,"text/javascript; charset=utf-8"],"/remote/assets/app.css":[remoteStyles,"text/css; charset=utf-8"],
-      "/remote/assets/xterm.js":[xtermScript,"text/javascript; charset=utf-8"],"/remote/assets/xterm.css":[xtermStyles,"text/css; charset=utf-8"],"/remote/assets/icon.png":[appIcon,"image/png"]};
+      "/remote/assets/xterm.js":[xtermScript,"text/javascript; charset=utf-8"],"/remote/assets/xterm.css":[xtermStyles,"text/css; charset=utf-8"],"/remote/assets/icon.png":[appIcon,"image/png"],"/remote/assets/agents.json":[agentMarks,"application/json; charset=utf-8"]};
     const file=files[path];if(!file)return undefined;
     return new Response(file[0],{headers:{"Content-Type":file[1],"Cache-Control":"no-cache","X-Content-Type-Options":"nosniff"}});
   }

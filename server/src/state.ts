@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { BridgeError } from "./errors";
+import { record } from "./activity";
 
 export type Scope = "read" | "control";
 export interface Device { id: string; name: string; scope: Scope; createdAt: number; revokedAt: number | null; }
@@ -28,7 +29,8 @@ export class State {
       CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY,name TEXT NOT NULL,scope TEXT NOT NULL,digest TEXT UNIQUE NOT NULL,created INTEGER NOT NULL,revoked INTEGER);
       CREATE TABLE IF NOT EXISTS operations (device TEXT NOT NULL,id TEXT NOT NULL,digest TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created INTEGER NOT NULL,PRIMARY KEY(device,id));
       CREATE TABLE IF NOT EXISTS relay_credentials (digest TEXT PRIMARY KEY,invitation TEXT,device TEXT,expires INTEGER);
-      CREATE TABLE IF NOT EXISTS relay_holders (digest TEXT NOT NULL,device TEXT NOT NULL,PRIMARY KEY(digest,device));`);
+      CREATE TABLE IF NOT EXISTS relay_holders (digest TEXT NOT NULL,device TEXT NOT NULL,PRIMARY KEY(digest,device));
+      CREATE TABLE IF NOT EXISTS device_seen (device TEXT PRIMARY KEY,seen INTEGER NOT NULL);`);
     // Older state files predate multi-use invitations.
     if (!(this.db.query("PRAGMA table_info(invitations)").all() as {name:string}[]).some(c=>c.name==="uses")) this.db.exec("ALTER TABLE invitations ADD COLUMN uses INTEGER NOT NULL DEFAULT 1");
     if (recover) this.db.query("UPDATE operations SET state='unknown' WHERE state='pending'").run();
@@ -81,8 +83,22 @@ export class State {
   authenticate(token:string): Device {
     const d=this.db.query("SELECT id,name,scope,created AS createdAt,revoked AS revokedAt FROM devices WHERE digest=? AND revoked IS NULL").get(hash(token)) as Device|null;
     if (!d) throw new BridgeError("invalid_credentials","Invalid credential",401);
+    this.touch(d);
     return d;
   }
+  /** When each device last reached the bridge, written at most once a minute per device (its own table, so older bridges ignore it). */
+  private seenCache=new Map<string,number>();
+  touch(device:Pick<Device,"id"|"name"|"createdAt">,now=Date.now()) {
+    let last=this.seenCache.get(device.id);
+    if (last!==undefined && now-last<60_000) return;
+    if (last===undefined) last=(this.db.query("SELECT seen FROM device_seen WHERE device=?").get(device.id) as {seen:number}|null)?.seen;
+    this.seenCache.set(device.id,now);
+    this.db.query("INSERT INTO device_seen VALUES (?,?) ON CONFLICT(device) DO UPDATE SET seen=excluded.seen").run(device.id,now);
+    // Back after ten minutes or more: worth a line in the console's Recent activity.
+    // A device that just paired is already in the activity as paired.
+    if (last===undefined ? now-device.createdAt>=600_000 : now-last>=600_000) record(this.directory,{kind:"connected",device:device.id,name:device.name,at:now});
+  }
+  seen(): Map<string,number> { return new Map((this.db.query("SELECT device,seen FROM device_seen").all() as {device:string;seen:number}[]).map(r=>[r.device,r.seen])); }
   active(id:string) { return !!this.db.query("SELECT 1 FROM devices WHERE id=? AND revoked IS NULL").get(id); }
   devices(): Device[] { return this.db.query("SELECT id,name,scope,created AS createdAt,revoked AS revokedAt FROM devices ORDER BY created").all() as Device[]; }
   revoke(id:string) { return this.db.query("UPDATE devices SET revoked=? WHERE id=? AND revoked IS NULL").run(Date.now(),id).changes>0; }
