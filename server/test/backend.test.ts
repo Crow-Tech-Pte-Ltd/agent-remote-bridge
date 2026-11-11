@@ -1,5 +1,6 @@
 import {test,expect,afterEach} from 'bun:test';
-import {mkdtemp,rm,mkdir,writeFile,symlink} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,writeFile,symlink,stat} from 'node:fs/promises';
+import {existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createServer} from 'node:net';
@@ -77,4 +78,24 @@ test('labels are set, trimmed and cleared through Herdr pane.rename; bad labels 
   await expect(f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'x'.repeat(61)})).rejects.toMatchObject({status:400});
   expect(f.calls.slice(before).some(c=>c.method==='pane.rename')).toBe(false);
   f.live.renameUnsupported=true;await expect(f.backend.mutate('pane.rename',undefined,{paneId:'w1:p1',label:'x'})).rejects.toMatchObject({status:501,code:'pane_labels_unsupported'});
+});
+
+// openspec/changes/create-missing-folders
+test('Herdr: a new workspace, tab or split in a missing folder creates it just before the call',async()=>{
+ const f=await fake('0.9.5');expect(((await f.backend.snapshot()) as any).capabilities.createsFolders).toBe(true);
+ const fresh=join(f.dir,'projects','new-idea');
+ const made:any=await f.backend.mutate('workspace.create',undefined,{cwd:fresh,label:'New'});
+ expect(f.calls.at(-1)).toMatchObject({method:'workspace.create',params:{cwd:fresh,label:'New',focus:false}});
+ expect(made.folderCreated).toBe(fresh);expect((await stat(fresh)).isDirectory()).toBe(true);
+ const tab=join(f.dir,'tab-folder');expect(((await f.backend.mutate('tab.create',undefined,{workspaceId:'w1',cwd:tab})) as any).folderCreated).toBe(tab);
+ const split=join(f.dir,'split-folder');expect(((await f.backend.mutate('pane.split',undefined,{paneId:'w1:p1',direction:'right',cwd:split})) as any).folderCreated).toBe(split);
+ expect(((await f.backend.mutate('workspace.create',undefined,{cwd:fresh})) as any).folderCreated).toBeUndefined();
+ const calls=f.calls.length;
+ await expect(f.backend.mutate('tab.create',undefined,{workspaceId:'w9',cwd:join(f.dir,'refused')})).rejects.toMatchObject({status:404});
+ await expect(f.backend.mutate('pane.split',undefined,{paneId:'w1:p1',direction:'up',cwd:join(f.dir,'refused')})).rejects.toMatchObject({status:400});
+ await expect(f.backend.mutate('workspace.create',undefined,{cwd:'relative/path'})).rejects.toMatchObject({code:'invalid_cwd'});
+ expect(existsSync(join(f.dir,'refused'))).toBe(false);
+ await writeFile(join(f.dir,'file.txt'),'x');
+ await expect(f.backend.mutate('workspace.create',undefined,{cwd:join(f.dir,'file.txt')})).rejects.toMatchObject({code:'invalid_cwd'});
+ expect(f.calls.slice(calls).some(c=>['workspace.create','tab.create','pane.split'].includes(c.method))).toBe(false);
 });

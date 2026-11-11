@@ -6,6 +6,8 @@ import { Controls, deadline, scrollNotches } from "./control";
 import type { Lease } from "./control";
 import { BridgeError, failure } from "./errors";
 import { State, hash, canonical } from "./state";
+import { record } from "./activity";
+import { homedir } from "node:os";
 import type { Device, Scope } from "./state";
 import type { GatewayConnection } from "./connection";
 import type { BridgeRelease } from "./updates";
@@ -220,6 +222,11 @@ export function createBridge(options:BridgeOptions) {
     if(nearbyFailures.length>=20){nearbyDisabled=true;nearby.clear();say("Nearby pairing turned off after repeated wrong codes. Restart the bridge to allow it again.","warn");}
     return nearbyDisabled;
   }
+  // A folder a new workspace, tab or split had to create (backend/folders.ts) goes in the console's Recent activity.
+  function noteFolder(device:Device,result:unknown) {
+    const path=(result as {folderCreated?:unknown}|null)?.folderCreated;if(typeof path!=="string")return;
+    const home=homedir();record(state.directory,{kind:"folder_created",device:device.id,name:device.name,detail:path===home||path.startsWith(home+"/")?"~"+path.slice(home.length):path});
+  }
   async function mutation(device:Device,requestId:unknown,operationKey:unknown,dispatch:()=>Promise<unknown>) {
     control(device);const id=str(requestId,36);if(!UUID.test(id))throw new BridgeError("invalid_request","UUID required");
     const begin=state.begin(device.id,id,hash(canonical(operationKey)));
@@ -409,7 +416,7 @@ export function createBridge(options:BridgeOptions) {
           else if(parts[1]==="panes" && parts.length===3 && request.method==="DELETE"){only(value,["requestId","identityToken"]);str(value.identityToken);kind="pane.close";value.paneId=parts[2];}
           else if(url.pathname==="/v1/agents" && request.method==="POST"){only(value,["requestId","paneId","identityToken","kind","name"]);str(value.paneId);str(value.identityToken);str(value.kind,32);str(value.name,100);kind="agent.start";}
           if(kind){const selected=kind;return await mutation(device,value.requestId,{route:url.pathname,session:session??null,body:value},async()=>{
-            const dispatch=async()=>{if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);if(value.paneId&&value.identityToken!==undefined)await controls.identity(session,value.paneId as string,value.identityToken as string);if(!state.active(device.id))throw new BridgeError("invalid_credentials","Revoked",401);if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);return deadline(backend.mutate(selected,session,value),15_000,true);};
+            const dispatch=async()=>{if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);if(value.paneId&&value.identityToken!==undefined)await controls.identity(session,value.paneId as string,value.identityToken as string);if(!state.active(device.id))throw new BridgeError("invalid_credentials","Revoked",401);if(state.operation(device.id,value.requestId as string).state!=="pending")throw new BridgeError("delivery_unknown","Operation no longer pending",503,true);return deadline(backend.mutate(selected,session,value),15_000,true).then(result=>{noteFolder(device,result);return result;});};
             return value.paneId?controls.serial.run(controls.key(session,value.paneId as string),dispatch):dispatch();
           });}
         }

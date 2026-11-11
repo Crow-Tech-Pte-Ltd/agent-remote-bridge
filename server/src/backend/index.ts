@@ -9,6 +9,7 @@ import { readTranscript, lastMessageAt, type NativeSession } from './transcripts
 import { discoverSession } from './session-discovery';
 import { HARNESSES, harnessByKind, installedHarnesses } from './harnesses';
 import { BackendError, paneLabel, type HostBackend, type PaneIdentity, type TerminalHandle } from './types';
+import { ensureFolder, withFolder } from './folders';
 import { resolveWorkspaceRoot, listWorkspaceFiles, readWorkspaceFile, readWorkspaceGitStatus, readWorkspaceGitDiff, WorkspaceInspectionError } from './workspace-inspection';
 export * from './types';
 export interface HerdrBackendOptions {herdr?:string;session?:string;epoch?:string;configDir?:string;homeDir?:string;socketPath?:string;codexHome?:string;claudeConfigDir?:string;requireAgentBinary?:boolean;agentExecutable?:(kind:string)=>string|null}
@@ -90,7 +91,7 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   const agentExecutable=options.agentExecutable??((command:string)=>installedHarnesses().some(x=>x.command===command));
   // Herdr's agent.start validates its own labels; the phone is offered the ones installed here.
   const startable=()=>HARNESSES.filter(x=>x.herdr&&agentExecutable(x.command)).map(x=>x.kind);
-  const caps=(s:any)=>{const kinds=startable();return {output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:modern(s.version),workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:modern(s.version),agentKinds:kinds.length?kinds:['claude','codex'],agentStartSetupRequired:requireAgentBinary&&!kinds.length,paneLabels:true};};
+  const caps=(s:any)=>{const kinds=startable();return {output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:modern(s.version),workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:modern(s.version),agentKinds:kinds.length?kinds:['claude','codex'],agentStartSetupRequired:requireAgentBinary&&!kinds.length,paneLabels:true,createsFolders:true};};
   async function inspect<T>(session:string|undefined,workspaceId:string,paneId:string|undefined,fn:(root:string)=>Promise<T>):Promise<T> {
     try {
       const state=await raw(selected(session));const w=state.workspaces.find((w:any)=>w.workspace_id===workspaceId);
@@ -204,7 +205,9 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
         else if(kind==='pane.rename')params={pane_id:p.p.pane_id,...(paneLabel(body.label)?{label:paneLabel(body.label)}:{})};
         else {if(!modern(state.version))throw new BackendError('agent_start_unsupported','This Herdr version creates layout in agent.start and cannot safely start in the selected pane',501);params={pane_id:p.p.pane_id,name:string(body.name,'name',32),kind:string(body.kind,'agent kind',32)};const harness=harnessByKind(String(params.kind));if(!harness?.herdr)throw new BackendError('agent_kind_unsupported','Herdr cannot start this agent kind',501);if(!/^[a-z][a-z0-9_-]{0,31}$/.test(String(params.name)))throw new BackendError('invalid_name','Invalid agent name',400);if(requireAgentBinary&&!agentExecutable(harness.command))throw new BackendError('agent_not_installed','Install and configure this agent tool in the coding environment first',501);}
       }
-      try{return await call(name,kind,params,true);}
+      // Last, after every other check: a refused request leaves no folder behind.
+      const folder=typeof params.cwd==='string'?ensureFolder(params.cwd):undefined;if(folder)params.cwd=folder.path;
+      try{return withFolder(await call(name,kind,params,true),folder);}
       catch(e){if(kind==='pane.rename'&&e instanceof BackendError&&e.status===501)throw new BackendError('pane_labels_unsupported','This Herdr version cannot store pane labels',501);throw e;}
     },
     close(){closed=true;for(const h of handles)h.close();handles.clear();},

@@ -5,6 +5,7 @@ import {basename,isAbsolute,join,resolve} from 'node:path';
 import {Terminal as Screen} from '@xterm/headless';
 import {SerializeAddon} from '@xterm/addon-serialize';
 import {BackendError,paneLabel,type HostBackend,type PaneIdentity,type TerminalFrame,type TerminalHandle} from '../types';
+import {ensureFolder,withFolder} from '../folders';
 import {resolveWorkspaceRoot,listWorkspaceFiles,readWorkspaceFile,readWorkspaceGitStatus,readWorkspaceGitDiff,WorkspaceInspectionError} from '../workspace-inspection';
 import {harnessByKind,harnessFor,installedHarnesses,type Harness} from '../harnesses';
 import {discoverSession,processCwd} from '../session-discovery';
@@ -32,6 +33,7 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
     const folders=[...workspaces.values()].map(w=>({cwd:w.cwd,label:w.label}));
     const temp=`${store}.${process.pid}.tmp`;writeFileSync(temp,JSON.stringify({version:1,folders},null,2)+'\n',{mode:0o600});renameSync(temp,store);
   }
+  /** A saved or --folder folder: it must exist (one deleted since is skipped at start-up, not recreated). */
   function folder(cwd:string) {
     if(!isAbsolute(cwd))throw new BackendError('invalid_cwd','Folder must be an absolute path',400);
     const path=resolve(cwd);let info;try{info=statSync(path);}catch{throw new BackendError('invalid_cwd','Folder does not exist',400);}
@@ -159,7 +161,7 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
         return {...i,...(p.label?{label:p.label}:{}),...(title?{title}:{}),...(at?{lastMessageAt:at}:{}),workspaceId:w.id,workspaceLabel:w.label,workspaceNumber:w.number,tabId:p.tabId,kind:i.agent==='shell'?'shell':'agent',cwd:w.cwd,focused:false};}));
       const agents=rows.filter(r=>r.kind==='agent');
       return {bridge:'connected',backend:{kind:'plain',name:'Terminals',version:null,controlScope:'bridge'},session:'default',epoch,
-        capabilities:{output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:true,workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:true,agentKinds:available(),paneLabels:true},
+        capabilities:{output:true,terminalObserve:true,terminalControl:true,transcript:true,git:true,files:true,submitText:true,atomicSubmit:true,workspaceCreate:true,tabCreate:true,paneSplit:true,paneClose:true,agentStart:true,agentKinds:available(),paneLabels:true,createsFolders:true},
         agents,shellPanes:rows.filter(r=>r.kind==='shell'),
         workspaces:[...workspaces.values()].map(w=>({workspaceId:w.id,number:w.number,label:w.label,focused:false,tabCount:[...tabs.values()].filter(t=>t.workspaceId===w.id).length,paneCount:rows.filter(r=>r.workspaceId===w.id).length})),
         tabs:[...tabs.values()].map(t=>({tabId:t.id,workspaceId:t.workspaceId,number:t.number,label:t.label,focused:false,paneCount:rows.filter(r=>r.tabId===t.id).length})),
@@ -227,11 +229,12 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
     },
     async mutate(kind,session,body) {
       checkSession(session);
-      if(kind==='workspace.create'){const cwd=folder(text(body.cwd,'cwd'));const w=addWorkspace(cwd,typeof body.label==='string'?text(body.label,'label',100):undefined);const p=spawnPane(addTab(w),cwd);save();return {workspace:{workspaceId:w.id},pane:{paneId:p.id}};}
-      if(kind==='tab.create'){const w=workspaces.get(text(body.workspaceId,'workspaceId',128));if(!w)throw new BackendError('workspace_not_found','Workspace not found',404);const cwd=body.cwd?folder(text(body.cwd,'cwd')):w.cwd;const t=addTab(w,typeof body.label==='string'?text(body.label,'label',100):undefined);const p=spawnPane(t,cwd);return {tab:{tabId:t.id},pane:{paneId:p.id}};}
+      // A missing folder is created last, once the rest of the request has been checked (folders.ts).
+      if(kind==='workspace.create'){const requested=text(body.cwd,'cwd'),label=typeof body.label==='string'?text(body.label,'label',100):undefined;const f=ensureFolder(requested);const w=addWorkspace(f.path,label);const p=spawnPane(addTab(w),f.path);save();return withFolder({workspace:{workspaceId:w.id},pane:{paneId:p.id}},f);}
+      if(kind==='tab.create'){const w=workspaces.get(text(body.workspaceId,'workspaceId',128));if(!w)throw new BackendError('workspace_not_found','Workspace not found',404);const label=typeof body.label==='string'?text(body.label,'label',100):undefined;const f=body.cwd?ensureFolder(text(body.cwd,'cwd')):undefined;const t=addTab(w,label);const p=spawnPane(t,f?.path??w.cwd);return withFolder({tab:{tabId:t.id},pane:{paneId:p.id}},f);}
       if(kind==='pane.rename'){const p=pane(body.paneId),label=paneLabel(body.label);p.label=label||undefined;return {pane:{paneId:p.id,label:p.label??null}};}
       const p=pane(body.paneId,text(body.identityToken,'identityToken',128));
-      if(kind==='pane.split'){if(!['right','down'].includes(String(body.direction)))throw new BackendError('invalid_direction','Split must be right or down',400);const n=spawnPane(tabs.get(p.tabId)!,body.cwd?folder(text(body.cwd,'cwd')):workspaces.get(p.workspaceId)!.cwd);return {pane:{paneId:n.id}};}
+      if(kind==='pane.split'){if(!['right','down'].includes(String(body.direction)))throw new BackendError('invalid_direction','Split must be right or down',400);const f=body.cwd?ensureFolder(text(body.cwd,'cwd')):undefined;const n=spawnPane(tabs.get(p.tabId)!,f?.path??workspaces.get(p.workspaceId)!.cwd);return withFolder({pane:{paneId:n.id}},f);}
       if(kind==='pane.close'){closePane(p,'pane_closed');return {closed:true};}
       // agent.start types the harness command into a terminal that is idle at its shell prompt.
       const harness=harnessByKind(text(body.kind,'agent kind',32));if(!harness)throw new BackendError('agent_kind_unsupported','Unknown agent kind',501);

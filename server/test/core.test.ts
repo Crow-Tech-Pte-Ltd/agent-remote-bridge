@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
+import { recent } from "../src/activity";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { State, hash } from "../src/state";
@@ -260,5 +261,12 @@ describe("response cost",()=>{
     expect(reads).toBe(1);expect(new Set(results.map(r=>r.read))).toEqual(new Set([1]));
     const created=await f.request("/v1/workspaces",d.token,"POST",{requestId:randomUUID(),cwd:"/tmp"});expect(created.status).toBe(200);
     expect((await (await f.request("/v1/snapshot",d.token)).json() as any).read).toBe(2);
+  });
+  test("a folder created for a new terminal goes in the console's recent activity, home shown as ~",async()=>{
+    const f=fixture(),d=f.device("control");
+    (f.backend as {mutate:()=>Promise<unknown>}).mutate=async()=>({workspace:{workspaceId:"w2"},folderCreated:join(homedir(),"projects","new-idea")});
+    const created=await f.request("/v1/workspaces",d.token,"POST",{requestId:randomUUID(),cwd:join(homedir(),"projects","new-idea")});
+    expect(created.status).toBe(200);expect((await created.json() as any).result.folderCreated).toBe(join(homedir(),"projects","new-idea"));
+    expect(recent(f.dir)[0]).toMatchObject({kind:"folder_created",name:"Test device",detail:"~/projects/new-idea"});
   });
 });
