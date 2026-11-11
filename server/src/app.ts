@@ -50,10 +50,14 @@ class Limiter {
 
   }
 }
-export interface SocketData {device:Device;session?:string;generation:number;observer?:TerminalHandle;pane?:string;identity?:string;lease?:string;controllerFrames?:boolean;seq?:number;fitHost?:boolean;skippingSince?:number;size?:{cols:number;rows:number};acks?:boolean;sent?:number;acked?:number;}
+export interface SocketData {device:Device;session?:string;generation:number;observer?:TerminalHandle;pane?:string;identity?:string;lease?:string;controllerFrames?:boolean;seq?:number;fitHost?:boolean;skippingSince?:number;size?:{cols:number;rows:number};acks?:boolean;sent?:number;acked?:number;
+  /** When the phone last sent anything on this socket, a message or a ping or pong. */
+  heard?:number;}
 export interface BridgeOptions {
   state:State;backend:HostBackend;hostName?:string;hostname?:string;port?:number;epoch?:string;
   tls?:{cert:string|Bun.BunFile;key:string|Bun.BunFile};leaseMilliseconds?:number;
+  /** A socket behind on frames and silent this long (no message, ping or pong) is ended. Default 20 s. */
+  silentSocketMilliseconds?:number;
   /** Additional explicitly authenticated routes, e.g. optional content-free notifications. */
   route?:(request:Request,url:URL,device:Device)=>Promise<Response|undefined>;
   /**
@@ -228,17 +232,44 @@ export function createBridge(options:BridgeOptions) {
     }catch(error){const f=failure(error);const ambiguous=!(error instanceof Error && "deliveryAmbiguous" in error) || (error as BridgeError).deliveryAmbiguous;if(ambiguous)(f.body as {deliveryAmbiguous?:boolean}).deliveryAmbiguous=true;state.finish(device.id,id,ambiguous?"unknown":"failed",f.body);return reply(f.body,f.status);}
   }
   // The live-socket handlers, shared by the phone listener and the in-process entry (`local`) below.
-  function socketOpen(ws:ServerWebSocket<SocketData>){sockets.add(ws);send(ws,{type:"connected",epoch});}
-  function socketMessage(ws:ServerWebSocket<SocketData>,message:string|Buffer){websocketMessage(ws,message).catch(error=>{const f=failure(error);send(ws,{type:"error",...f.body.error});});}
-  function socketClose(ws:ServerWebSocket<SocketData>){sockets.delete(ws);clearStream(ws);}
-  function admitSocket(device:Device){if([...sockets].filter(ws=>ws.data.device.id===device.id).length>=4 || sockets.size>=64)throw new BridgeError("rate_limited","Socket limit",429);}
+  // AGENT_REMOTE_LOG_SOCKETS=1 logs every live socket opening and closing (device ID prefix and counts only).
+  const logSockets=process.env.AGENT_REMOTE_LOG_SOCKETS==="1",refusalLogged=new Map<string,number>();
+  const ownSockets=(device:string)=>[...sockets].filter(ws=>ws.data.device.id===device).length;
+  function socketOpen(ws:ServerWebSocket<SocketData>){ws.data.heard=Date.now();sockets.add(ws);if(logSockets)console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_open",device:ws.data.device.id.slice(0,8),open:ownSockets(ws.data.device.id)}));send(ws,{type:"connected",epoch});}
+  function socketHeard(ws:ServerWebSocket<SocketData>){ws.data.heard=Date.now();}
+  function socketMessage(ws:ServerWebSocket<SocketData>,message:string|Buffer){ws.data.heard=Date.now();websocketMessage(ws,message).catch(error=>{const f=failure(error);send(ws,{type:"error",...f.body.error});});}
+  function socketClose(ws:ServerWebSocket<SocketData>){sockets.delete(ws);if(logSockets)console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_close",device:ws.data.device.id.slice(0,8),pane:ws.data.pane??null,open:ownSockets(ws.data.device.id)}));clearStream(ws);}
+  function admitSocket(device:Device){
+    let open=ownSockets(device.id);
+    // A device at its four sockets is let in by ending its own socket it has heard least from that holds no
+    // control. A phone's closed socket can stay open here for a minute or more when its close handshake stalls
+    // behind frames on their way, and the pane the person just opened must not wait for it. The device keeps at
+    // most four; other devices are never touched.
+    if(open>=4 && sockets.size<64) {
+      // A socket streaming nothing is a phone's dead one (its stream was dropped when it stopped reading) or its
+      // list-update socket, which the phone simply reopens; only then one that streams a pane in the background.
+      const mine=[...sockets].filter(ws=>ws.data.device.id===device.id && !ws.data.lease),quietest=(list:typeof mine)=>list.sort((a,b)=>(a.data.heard??0)-(b.data.heard??0))[0];
+      const victim=quietest(mine.filter(ws=>!ws.data.pane))??quietest(mine);
+      if(victim) {
+        sockets.delete(victim);
+        console.error(JSON.stringify({event:"live_socket_replaced",device:device.id.slice(0,8),pane:victim.data.pane??null,quietSeconds:Math.round((Date.now()-(victim.data.heard??0))/1000)}));
+        clearStream(victim);try{victim.terminate();}catch{}
+        open--;
+      }
+    }
+    if(open>=4 || sockets.size>=64) {
+      // Once a minute per device: a phone that keeps hitting the limit shows up in the bridge's log.
+      if(logSockets||Date.now()-(refusalLogged.get(device.id)??0)>60_000){refusalLogged.set(device.id,Date.now());console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_refused",device:device.id.slice(0,8),open,total:sockets.size}));}
+      throw new BridgeError("rate_limited","Socket limit",429);
+    }
+  }
   let relayServer:Bun.Server<SocketData>|undefined;
   const listen=(hostname:string,port:number)=>Bun.serve<SocketData>({
     hostname,port,tls:options.tls,idleTimeout:30,maxRequestBodySize:MAX_BODY,
     websocket:{maxPayloadLength:16_384,idleTimeout:60,backpressureLimit:1_048_576,closeOnBackpressureLimit:true,sendPings:true,
       // Terminal frames are text; clients that offer per-message deflate (Android) get them compressed.
       perMessageDeflate:true,
-      open:socketOpen,message:socketMessage,close:socketClose,
+      open:socketOpen,message:socketMessage,close:socketClose,ping:socketHeard,pong:socketHeard,
     },
     async fetch(request,server) {
       const response=await handle(request,server,server===relayServer);
@@ -449,6 +480,9 @@ export function createBridge(options:BridgeOptions) {
   const sweep=setInterval(()=>{
     controls.sweep();for(const ws of sockets){
       if(!state.active(ws.data.device.id)){clearStream(ws);ws.close(4001,"Device revoked");}
+      // A phone that stopped reading a socket (closed on its side, the close lost) leaves frames piling up and
+      // never answers: end it, so it stops counting against the phone's four sockets.
+      else if(behind(ws) && Date.now()-(ws.data.heard??0)>(options.silentSocketMilliseconds??20_000)){sockets.delete(ws);console.error(JSON.stringify({event:"live_socket_dead",device:ws.data.device.id.slice(0,8),pane:ws.data.pane??null}));clearStream(ws);try{ws.terminate();}catch{}}
       // An idle pane sends no further full frame; resubscribe once the link has drained.
       else if(ws.data.skippingSince!==undefined && Date.now()-ws.data.skippingSince>3000 && drained(ws)){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
     }

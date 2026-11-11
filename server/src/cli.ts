@@ -5,12 +5,13 @@ import { chmodSync, readFileSync, writeFileSync, unlinkSync, existsSync, lstatSy
 import { parseArgs } from "node:util";
 import QRCode from "qrcode";
 import { State, privateDirectory } from "./state";
-import { initialize, loadConfig, saveConfig, certificatePin } from "./config";
+import { initialize, loadConfig, saveConfig, certificatePin, type Config } from "./config";
 import { createUpdater, detectInstall, installRelease, linkCommands, latestRelease, mode as updateMode, newer, type UpdateMode } from "./updates";
 import { loadOrcaConnection } from "./backend/orca/connection";
 import { randomUUID } from "node:crypto";
 import { connectionProfile, type HostConnection } from "./connection";
 import { lanAddresses, localHostname } from "./discovery";
+import { addressURL, certificateNames, invitationAddresses, requireCovered } from "./addresses";
 import { createRelay, readRelayProfile, relayProfileFor, relaySecrets } from "./relay";
 import { startServices, type Services } from "./services";
 import { startConsole, consoleLaunchURL, openBrowser } from "./console";
@@ -31,8 +32,13 @@ const usage=`AI Agent Remote bridge host ${version} (agent-remote; herdr-remote 
   Orca init/serve: --backend orca --orca-connection /private/orca-access.txt (local runtime link)
   Plain terminals (no Herdr or Orca): --backend plain [--folder DIR]... the bridge runs its own shells;
     folders become workspaces (default: your home folder, then whatever you add from the phone)
-  agent-remote pair [--scope read|control] [--ttl 300] [--uses 1] [--qr] [--connection PRIVATE_PROFILE.json] [--no-relay]
+  agent-remote pair [--scope read|control] [--ttl 300] [--uses 1] [--qr] [--url ADDRESS] [--connection PRIVATE_PROFILE.json] [--no-relay]
       (--ttl up to 2592000 seconds and --uses up to 20, e.g. for an app reviewer's invitation)
+      Works while the bridge runs. The invitation also lists this computer's LAN addresses, so a phone
+      that can't resolve its name (away on a VPN) reaches it by IP. --url: this invitation only, another address
+  agent-remote address [set ADDRESS]   show, or change, the address invitations give phones (e.g. set
+      192.168.1.20 or https://studio.local:8443). Paired phones keep working and learn the computer's
+      addresses when they connect; nothing is re-paired. The certificate must cover the new name.
   agent-remote devices
   agent-remote revoke --device UUID
   agent-remote console              print a one-time link to the running bridge's local web console
@@ -115,6 +121,7 @@ export async function main(args=process.argv.slice(2)) {
   if(command==="service"){await service(directory,parsed.positionals[1],v);return;}
   const config=loadConfig(directory);
   if(command==="console"){console.log(consoleLaunchURL(directory,config.consolePort??8790));return;}
+  if(command==="address"){console.log(JSON.stringify(address(directory,config,parsed.positionals.slice(1)),null,2));return;}
   if(command==="web") {
     if(parsed.positionals[1]==="password") {
       if(v.clear){await setWebPassword(directory,null);console.log(JSON.stringify({password:false,next:"the web remote is no longer served on the network after the next restart"}));return;}
@@ -199,16 +206,19 @@ export async function main(args=process.argv.slice(2)) {
     if(command==="pair") {
       const scope=v.scope??"read";if(scope!=="read"&&scope!=="control")throw new Error("--scope must be read or control");
       let connection:HostConnection|undefined,relayed=false;
+      // --url: one invitation for another address the certificate covers; the saved one stays.
+      const url=v.url?addressURL(v.url,config.port):config.url;if(v.url)requireCovered(url,config.certificate);
       if(v.connection) {
         const file=lstatSync(v.connection);
         if(!file.isFile()||file.isSymbolicLink()||(file.mode&0o077)!==0||file.size>8192)throw new Error("Connection profile must be a private regular file");
-        connection=connectionProfile(JSON.parse(readFileSync(v.connection,"utf8")),config.url);
-      } else if(!v["no-relay"]&&existsSync(relayFile)){connection=connectionProfile(readRelayProfile(relayFile).phone,config.url);relayed=true;}
+        connection=connectionProfile(JSON.parse(readFileSync(v.connection,"utf8")),url);
+      } else if(!v["no-relay"]&&existsSync(relayFile)){connection=connectionProfile(readRelayProfile(relayFile).phone,url);relayed=true;}
       // A relay that takes per-device credentials gets one minted for this invitation instead of the shared token.
       const personal=relayed&&state.metadata("relayRevision")==="2";
       const {relayToken,...invite}=state.invite(scope,Number(v.ttl??300),personal,Number(v.uses??1));
       if(relayToken&&connection?.mode==="gateway")connection={mode:"gateway",gateway:{...connection.gateway,token:relayToken}};
-      const invitation={version:connection?2:1,url:config.url,certificateSHA256:certificatePin(config.certificate),...invite,...(connection?{connection}:{})};
+      const addresses=invitationAddresses(directory,config,url);
+      const invitation={version:connection?2:1,url,certificateSHA256:certificatePin(config.certificate),...invite,...(addresses.length?{addresses}:{}),...(connection?{connection}:{})};
       const uri=`herdr-remote://pair?data=${Buffer.from(JSON.stringify(invitation)).toString("base64url")}`;
       console.log(v.json?JSON.stringify(invitation):uri);
       if(v.qr)console.log(await QRCode.toString(uri,{type:"terminal",small:true,errorCorrectionLevel:"M"}));
@@ -226,6 +236,17 @@ async function firstRun(directory:string,v:FirstRunOptions) {
     hostName:v.name??hostname().split(".")[0],sans:[...addresses,"localhost","127.0.0.1"],backend:v.backend as "herdr"|"orca"|"plain"|undefined,orcaConnection:v["orca-connection"],discoverable:true});
   new State(directory,false).close();
   console.error(`Created bridge state in ${directory}\n  address  ${created.url} (also ${addresses.join(", ")||"no LAN address found"})\n  pin      ${certificatePin(created.certificate)}`);
+}
+/** `agent-remote address [set ADDRESS]` (openspec/changes/reach-computers-from-anywhere). Only on request:
+ *  it changes what new invitations say, never revokes or re-pairs a phone. */
+function address(directory:string,config:Config,args:string[]) {
+  const report=(current:Config)=>({url:current.url,addresses:invitationAddresses(directory,current),certificateCovers:certificateNames(current.certificate)});
+  if(args.length===0)return report(config);
+  if(args[0]!=="set"||args.length!==2)throw new Error("address takes nothing, or set ADDRESS");
+  const url=addressURL(args[1]!,config.port);requireCovered(url,config.certificate);
+  const changed=url!==config.url;if(changed)saveConfig(directory,{...config,url});
+  return {...report(loadConfig(directory)),...(changed?{previous:config.url}:{}),changed,
+    next:changed?"New invitations use this address now. Paired phones keep their pairing; a phone that can't reach the computer at all needs agent-remote pair.":"nothing to change"};
 }
 /** `agent-remote service install|uninstall|status` (openspec/changes/add-bridge-service). */
 async function service(directory:string,action:string|undefined,v:FirstRunOptions&Parameters<typeof serveArguments>[1]) {

@@ -172,12 +172,14 @@ export function startConsole(options:ConsoleOptions) {
       certificate:certificate?{pin:certificate.pin,expiresAt:certificate.expiresAt,...(certificate.next?{next:{pin:certificate.next.pin,switchAt:certificate.next.switchAt}}:{})}:undefined};
   }
   async function invitation(scope:"read"|"control",ttl:number) {
-    const services=running(),config=services.config,relayFile=join(directory,"relay.json");
+    // The saved address, so `agent-remote address set` applies here without a restart.
+    const services=running(),config={...services.config,url:loadConfig(directory).url},relayFile=join(directory,"relay.json");
     let connection:HostConnection|undefined;
     if(existsSync(relayFile))connection=connectionProfile(readRelayProfile(relayFile).phone,config.url);
     const {relayToken,...invite}=services.state.invite(scope,ttl,!!connection&&services.state.metadata("relayRevision")==="2");
     if(relayToken&&connection?.mode==="gateway")connection={mode:"gateway",gateway:{...connection.gateway,token:relayToken}};
-    const data={version:connection?2:1,url:config.url,certificateSHA256:certificatePin(config.certificate),...invite,...(connection?{connection}:{})};
+    const own=new URL(config.url).origin,addresses=services.localRoutes().filter(candidate=>new URL(candidate).origin!==own).slice(0,8);
+    const data={version:connection?2:1,url:config.url,certificateSHA256:certificatePin(config.certificate),...invite,...(addresses.length?{addresses}:{}),...(connection?{connection}:{})};
     const uri=`herdr-remote://pair?data=${Buffer.from(JSON.stringify(data)).toString("base64url")}`;
     return {svg:await QRCode.toString(uri,{type:"svg",errorCorrectionLevel:"M",margin:2}),expiresAt:invite.expiresAt,scope,relay:!!connection};
   }

@@ -26,7 +26,7 @@ class MockBackend implements HostBackend {
   async submitText(){this.submitted++;if(this.gate)await this.gate;if(this.ambiguous)throw new BackendError("delivery_unknown","sensitive payload must never be returned",503,true);return {admitted:true};}
   async mutate(){this.mutated++;return {created:true};}close(){}
 }
-function fixture(options:{leaseMilliseconds?:number}={}){
+function fixture(options:{leaseMilliseconds?:number;silentSocketMilliseconds?:number}={}){
   const dir=directory(),state=new State(dir,true),backend=new MockBackend();
   const bridge=createBridge({state,backend,...options});cleanup.push(()=>state.close());cleanup.push(()=>bridge.close());
   const base=bridge.server.url.origin;
@@ -166,6 +166,41 @@ test("CLI initializes an independent private state and cleans its lock after fai
   const invite=await cli(["pair","--scope","control","--json"]);expect(invite.status).toBe(0);expect(JSON.parse(invite.stdout).version).toBe(1);
   const failed=await cli(["serve"]);expect(failed.status).toBe(1);expect(failed.stderr).not.toContain(JSON.parse(invite.stdout).code);
   expect(await Bun.file(join(dir,"serve.lock")).exists()).toBe(false);expect(statSync(join(dir,"config.json")).mode&0o777).toBe(0o600);
+});
+
+test("a device at its four live sockets gets a new one by ending its quietest socket without control",async()=>{
+  // The owner's iPhone (11 November): closed background sockets stayed open on the bridge, so a newly opened chat was refused.
+  const f=fixture(),a=f.device(),other=f.device();
+  const theirs=await socket(f.base,other.token);
+  const held=await socket(f.base,a.token),lease=await f.lease(a.token);
+  held.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",leaseId:lease.leaseId,cols:80,rows:24}));
+  await eventually(()=>f.bridge.controls.leases.size===1&&held.messages.some(m=>m.type==="pane_frame"));
+  const stale=await socket(f.base,a.token);let staleClosed=false;stale.ws.addEventListener("close",()=>{staleClosed=true;});
+  await Bun.sleep(30);
+  const quiet=[await socket(f.base,a.token),await socket(f.base,a.token)];
+  // The socket that controls the pane is heard from most rarely of all, yet it stays: only sockets without control are ended.
+  for(const live of quiet)live.ws.send(JSON.stringify({type:"unobserve"}));
+  await Bun.sleep(30);
+  const fresh=await socket(f.base,a.token);
+  await eventually(()=>staleClosed);
+  await eventually(()=>fresh.messages.some(m=>m.type==="connected"));
+  expect(held.ws.readyState).toBe(WebSocket.OPEN);expect(theirs.ws.readyState).toBe(WebSocket.OPEN);
+  for(const live of quiet)expect(live.ws.readyState).toBe(WebSocket.OPEN);
+  expect(f.bridge.controls.leases.size).toBe(1);
+});
+
+test("a socket that stopped reading its frames and went silent is ended",async()=>{
+  const f=fixture({silentSocketMilliseconds:400}),a=f.device();
+  const original=f.backend.terminal.bind(f.backend);let emit:((frame:TerminalFrame)=>void)|undefined;
+  f.backend.terminal=async options=>{if(!options.control)emit=options.onFrame;return original(options);};
+  const dead=await socket(f.base,a.token),live=await socket(f.base,a.token);let closed=false;dead.ws.addEventListener("close",()=>{closed=true;});
+  dead.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",cols:80,rows:24,acks:true}));
+  await eventually(()=>dead.messages.some(m=>m.type==="pane_frame")&&!!emit);
+  // 300 KB of frames that are never acknowledged, and nothing heard from the phone after that.
+  const big=Buffer.alloc(30_000,"x").toString("base64");
+  for(let seq=1;seq<=10;seq++)emit!({type:"pane_frame",paneId:"p",identityToken:"identity-1",seq,full:true,width:80,height:24,bytes:big});
+  await eventually(()=>closed,3000);
+  expect(live.ws.readyState).toBe(WebSocket.OPEN);
 });
 
 test("server invalidates active terminal identities even if a client never refreshes snapshots",async()=>{
