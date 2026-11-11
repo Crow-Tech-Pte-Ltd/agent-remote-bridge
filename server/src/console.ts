@@ -13,7 +13,7 @@ import { relayProfile, readRelayProfile } from "./relay";
 import { connectionProfile, type HostConnection } from "./connection";
 import { certificateStatus, renewCertificate } from "./certificate";
 import type { Services } from "./services";
-import { consolePage, consoleScript, consoleStyles, remoteIcon } from "./web/assets";
+import { consolePage, consoleScript, consoleStyles, appIcon } from "./web/assets";
 import type { BridgeRelease } from "./updates";
 import { createRemote, hasWebPassword, setWebPassword } from "./web";
 
@@ -188,7 +188,7 @@ export function startConsole(options:ConsoleOptions) {
 }
 // The page and its files: static, no secrets, so they are served before the session check (Host is checked first).
 const CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
-const PAGES:Record<string,[string,string]>={"/":[consolePage,"text/html; charset=utf-8"],"/assets/console.js":[consoleScript,"text/javascript; charset=utf-8"],"/assets/console.css":[consoleStyles,"text/css; charset=utf-8"],"/assets/icon.svg":[remoteIcon,"image/svg+xml"]};
+const PAGES:Record<string,[string|Uint8Array,string]>={"/":[consolePage,"text/html; charset=utf-8"],"/assets/console.js":[consoleScript,"text/javascript; charset=utf-8"],"/assets/console.css":[consoleStyles,"text/css; charset=utf-8"],"/assets/icon.png":[appIcon,"image/png"]};
 /** Settings that apply without a restart: the update mode is read at every check, the web remote reloads its listener. */
 const LIVE=new Set<string>(["updates","webLan","webListen","webPort","webScope"]);
 /** The console itself is started once per process: these apply the next time the bridge starts. */

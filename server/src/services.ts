@@ -14,8 +14,10 @@ import { createNotifications } from "../notifications/index";
 import { advertise, lanAddresses } from "./discovery";
 import { connectRelay, readRelayProfile } from "./relay";
 import { certificateStatus } from "./certificate";
+import { terminal } from "./ui";
+import * as show from "./cli-output";
 
-export interface ServiceFlags {backend?:string;folder?:string[];"orca-connection"?:string;herdr?:string;session?:string;listen?:string;port?:string;"no-discovery"?:boolean;"no-local-route"?:boolean;}
+export interface ServiceFlags {backend?:string;folder?:string[];"orca-connection"?:string;herdr?:string;session?:string;listen?:string;port?:string;"no-discovery"?:boolean;"no-local-route"?:boolean;json?:boolean;}
 export interface Services {
   state:State;config:Config;bridge:ReturnType<typeof createBridge>;relay?:ReturnType<typeof connectRelay>;
   backend:"herdr"|"orca"|"plain";discoverable:boolean;localRoutes():string[];localRoute:boolean;listen:string;port:number;startedAt:string;close():void;
@@ -47,11 +49,13 @@ export async function startServices(directory:string,v:ServiceFlags,discover:boo
       ...(profile?{relay:{gateway:profile.phone.gateway,credentials:()=>relaySupportsCredentials}}:{}),
       certificate:()=>certificateStatus(loadConfig(directory),state.hostId),
       ...(!loopback(listen)?{localRoutes:()=>localRoutes()}:{}),...(extras.updates?{updates:extras.updates}:{})});
-    const relay=profile&&bridge.relayServer?connectRelay({profile,target:{host:"127.0.0.1",port:bridge.relayServer.port!},log:event=>console.error(JSON.stringify(event)),
+    // On a terminal the CLI prints a ready block and readable events; logs and pipes keep the JSON lines.
+    const out=terminal(process.stdout,{json:v.json}),err=terminal(process.stderr,{json:v.json});
+    const relay=profile&&bridge.relayServer?connectRelay({profile,target:{host:"127.0.0.1",port:bridge.relayServer.port!},log:event=>err.human?show.relayEvent(err,event):console.error(JSON.stringify(event)),
       credentials:()=>state.relayDigests(),onHello:revision=>{relaySupportsCredentials=revision>=2;state.setMetadata("relayRevision",String(revision));}}):undefined;
-    const advertisement=discover?advertise({url:config.url,hostId:state.hostId,certificateSHA256:pin,name:config.hostName,port:bridge.server.port??port,pairing:discover},message=>console.error(message)):undefined;
-    console.log(JSON.stringify({event:"listening",url:config.url,hostId:state.hostId,protocolVersion:1,discoverable:discover,relay:!!relay,localRoute}));
-    if(discover && process.stderr.isTTY)console.error(`\nReady. Open AI Agent Remote on your phone on the same Wi-Fi: ${config.hostName} appears under Nearby.\nWhen you tap Pair, a 6-digit code pops up on this computer. Press Ctrl-C to stop.`);
+    const advertisement=discover?advertise({url:config.url,hostId:state.hostId,certificateSHA256:pin,name:config.hostName,port:bridge.server.port??port,pairing:discover},message=>err.human?show.event(err,message,"warn"):console.error(message)):undefined;
+    if(!out.human)console.log(JSON.stringify({event:"listening",url:config.url,hostId:state.hostId,protocolVersion:1,discoverable:discover,relay:!!relay,localRoute}));
+    if(discover && process.stderr.isTTY && !out.human)console.error(`\nReady. Open AI Agent Remote on your phone on the same Wi-Fi: ${config.hostName} appears under Nearby.\nWhen you tap Pair, a 6-digit code pops up on this computer. Press Ctrl-C to stop.`);
     const created=bridge;
     return {state,config,bridge:created,relay,backend:kind,discoverable:discover,localRoutes,localRoute,listen,port:created.server.port??port,startedAt:new Date().toISOString(),
       activity:()=>({phones:created.activity(),terminals:backend?.liveTerminals?.()??0}),
@@ -72,5 +76,6 @@ export function announce(herdr:string,pin:string,request:{name:string;code:strin
     if(process.platform==="darwin")quiet("osascript",["-e",`display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`]);
     else if(Bun.which("notify-send"))quiet("notify-send",["-u","critical","-a","AI Agent Remote",title,body]);
   }
-  if(process.stderr.isTTY)console.error(`\n${title}\n  ${body}\n  Type this code on the phone. It expires in 2 minutes.\n`);
+  const err=terminal(process.stderr);
+  if(err.human)show.pairingCode(err,{name,code:request.code,pin});
 }

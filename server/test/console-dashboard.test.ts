@@ -47,9 +47,13 @@ test("console page: own script and styles under a CSP without unsafe-inline, not
   const html=await page.text();
   expect(html).not.toMatch(/<script(?![^>]*\ssrc=)/);expect(html).not.toMatch(/<style|\sstyle=|\son[a-z]+=/i);
   expect(html).toContain('src="/assets/console.js"');expect(html).toContain('href="/assets/console.css"');
-  for(const [path,type] of [["/assets/console.js","text/javascript"],["/assets/console.css","text/css"],["/assets/icon.svg","image/svg+xml"]] as const){
+  for(const [path,type] of [["/assets/console.js","text/javascript"],["/assets/console.css","text/css"],["/assets/icon.png","image/png"]] as const){
     const r=await fetch(h.origin+path);expect(r.status).toBe(200);expect(r.headers.get("content-type")).toStartWith(type);expect(r.headers.get("x-content-type-options")).toBe("nosniff");
   }
+  // The app's own icon (openspec/changes/polish-bridge-cli), not a placeholder.
+  const icon=new Uint8Array(await (await fetch(h.origin+"/assets/icon.png")).arrayBuffer());
+  expect([...icon.slice(0,8)]).toEqual([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);expect(icon.length).toBeGreaterThan(4000);
+  expect(html).toContain('src="/assets/icon.png"');
   const script=await (await fetch(h.origin+"/assets/console.js")).text();
   expect(script).not.toContain("innerHTML");expect(script.match(/https?:\/\/[^"`\s]*/g)?.filter(u=>!u.startsWith("http://www.w3.org/2000/svg")&&!u.startsWith("https://<"))??[]).toEqual([]);
   // A rebound hostname gets nothing, not even the static files; the API still needs the session.
