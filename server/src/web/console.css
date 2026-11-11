@@ -1,9 +1,10 @@
-/* Bridge console. Same colours as the web remote (remote.css) so the two pages read as one product. */
+/* Bridge console. Same colours as the web remote (remote.css) so the two pages read as one product; the accent is
+   the app icon's lavender (#6871ef), darkened where text sits on it so it keeps 4.5:1 contrast. */
 :root{--bg:#f2f2f7;--side:#fafafc;--panel:#fff;--panel2:#f5f5f8;--text:#1c1c1e;--muted:#6e6e73;--line:#e4e4e9;--line-strong:#d2d2d8;--field:#fff;
-  --accent:#0a64d6;--accent-strong:#0a64d6;--accent-text:#fff;--accent-tint:#e6effc;--good:#1f8a4c;--good-tint:#e2f3e9;--warn:#a85a00;--warn-tint:#fcf0dc;--bad:#c62f2f;--bad-tint:#fbe7e7;--blocked:#d9480f;--blocked-tint:#fdeadf;
+  --accent:#5158dc;--accent-strong:#5b63e6;--accent-text:#fff;--accent-tint:#ecedfd;--good:#1f8a4c;--good-tint:#e2f3e9;--warn:#a85a00;--warn-tint:#fcf0dc;--bad:#c62f2f;--bad-tint:#fbe7e7;--blocked:#d9480f;--blocked-tint:#fdeadf;
   --shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);--radius:14px;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#0f0f10;--side:#151517;--panel:#1c1c1e;--panel2:#242427;--text:#ececef;--muted:#9a9aa1;--line:#2c2c30;--line-strong:#3a3a3f;--field:#141416;
-  --accent:#4c8dff;--accent-strong:#2563eb;--accent-text:#fff;--accent-tint:#1b2a44;--good:#4cc27e;--good-tint:#15301f;--warn:#e6a23c;--warn-tint:#33260f;--bad:#ff6b6b;--bad-tint:#3a1818;--blocked:#ff8a4c;--blocked-tint:#3a2014;
+  --accent:#9ea4ff;--accent-strong:#5b63e6;--accent-text:#fff;--accent-tint:#25274d;--good:#4cc27e;--good-tint:#15301f;--warn:#e6a23c;--warn-tint:#33260f;--bad:#ff6b6b;--bad-tint:#3a1818;--blocked:#ff8a4c;--blocked-tint:#3a2014;
   --shadow:none;color-scheme:dark}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -150,7 +151,7 @@ a.tile:hover{border-color:var(--line-strong)}
 @media (max-width:600px){.hide-narrow{display:none}}
 .avatar{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--panel2);color:var(--muted);flex:none}
 .avatar.blocked{background:var(--blocked-tint);color:var(--blocked)}.avatar.good{background:var(--good-tint);color:var(--good)}.avatar.accent{background:var(--accent-tint);color:var(--accent)}
-.avatar.warn{background:var(--warn-tint);color:var(--warn)}
+.avatar.warn{background:var(--warn-tint);color:var(--warn)}.avatar.bad{background:var(--bad-tint);color:var(--bad)}
 .avatar{position:relative}
 .avatar .presence{position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:50%;background:var(--good);border:2px solid var(--panel)}
 .empty{display:grid;justify-items:center;text-align:center;gap:6px;padding:22px 12px;color:var(--muted)}
@@ -249,3 +250,57 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 .gate{max-width:460px;margin:16vh auto;padding:0 20px;text-align:center;display:grid;justify-items:center;gap:10px}
 .gate img{border-radius:14px}
 .gate h1{font-size:22px}
+
+/* Agent marks: the maker's logo (a mask filled with the text colour) or a letter, with a status badge */
+.mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--panel2);color:var(--text);flex:none;position:relative;font-weight:700;font-size:14px;line-height:1}
+.mark .glyph{width:18px;height:18px;background:currentColor;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+.mark.terminal{color:var(--muted)}
+.mark .badge{position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:50%;border:2px solid var(--panel);background:var(--muted)}
+.mark .badge.blocked{background:var(--blocked)}.mark .badge.working{background:var(--accent-strong)}.mark .badge.done{background:var(--good)}.mark .badge.idle{background:var(--line-strong)}
+.mark.small{width:28px;height:28px;border-radius:8px;font-size:12px}.mark.small .glyph{width:15px;height:15px}
+
+/* Agents */
+.search{flex:0 1 260px;min-width:160px}
+@media (max-width:600px){.search{flex:1 1 100%}}
+.search input{min-height:34px;padding:5px 10px}
+.agent-groups{display:grid;gap:16px}
+.group-head{display:flex;align-items:center;gap:10px;padding:14px 18px 4px}
+.group-head h2{font-size:14.5px;font-weight:650;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-head .n{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.agent-rows{padding:2px 18px 8px}
+.agent-row .when{font-size:12.5px;color:var(--muted);white-space:nowrap;min-width:64px;text-align:right}
+.agent-row .state{min-width:96px;display:flex;justify-content:flex-end}
+@media (max-width:700px){.agent-row .when,.agent-row .state{display:none}}
+
+/* Setup checklist */
+.setup .progress{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted)}
+.setup .progress .meter{flex:1;max-width:220px}
+.setup .progress .meter span{background:var(--accent-strong)}
+.tasks{display:grid;gap:2px;margin:0;padding:0;list-style:none}
+.task{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.task:first-child{border-top:0;padding-top:2px}
+.task .tick{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;flex:none;border:2px solid var(--line-strong);color:transparent}
+.task.done .tick{background:var(--good);border-color:var(--good);color:#fff}
+.task .main-text{display:grid;gap:1px;min-width:0;flex:1}
+.task .main-text strong{font-weight:600}
+.task.done .main-text strong{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--line-strong)}
+.task .main-text span{font-size:12.5px;color:var(--muted)}
+.task .actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width:600px){.task{flex-wrap:wrap;align-items:flex-start}.task .main-text{flex:1 1 calc(100% - 40px)}.task .actions{flex-basis:100%;justify-content:flex-start;padding-left:38px}}
+
+/* Recent activity */
+.feed{display:grid}
+.feed .row{padding:9px 0}
+.feed .avatar{width:30px;height:30px;border-radius:9px}
+.feed .main-text strong{font-weight:550}
+.routes.single{grid-template-columns:minmax(0,1fr)}
+.routes.single .row:nth-child(2){border-top:1px solid var(--line);padding-top:11px}
+
+/* Loading placeholders and the refresh button */
+.skeleton{background:linear-gradient(90deg,var(--panel2) 0%,var(--line) 50%,var(--panel2) 100%);background-size:200% 100%;border-radius:10px;animation:shimmer 1.3s ease-in-out infinite}
+.skeleton.tile{height:118px;border-radius:var(--radius)}
+.skeleton.block{height:240px;border-radius:var(--radius)}
+@keyframes shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinning .icon{animation:spin .7s linear infinite}
+@media (prefers-reduced-motion:reduce){.skeleton,.spinning .icon{animation:none}}

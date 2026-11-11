@@ -77,11 +77,12 @@ The bridge needs only outbound HTTPS (443); `HTTPS_PROXY` is honoured, and a TLS
 
 `serve` and `up` start a local console at `http://127.0.0.1:8790/` (`agent-remote console` prints a one-time link; `--no-console` or `"console": false` turns it off). It never leaves this computer. A sidebar leads to:
 
-- **Overview:** agents that need input or have finished, each opening in the web remote; devices connected now; how phones reach the computer; certificate expiry.
-- **Devices:** phones and browsers with access, presence, rename and revoke.
+- **Overview:** a "Get set up" checklist until it is done (pair a phone, start with this computer, reach it away from home); agents that need input or have finished, each opening in the web remote; devices connected now; recent activity (pairings, connections, relay, updates, changes); how phones reach the computer; certificate expiry.
+- **Agents:** every agent and terminal by workspace, with the maker's mark, status filters, search and Open in the web remote.
+- **Devices:** phones and browsers with access, presence, when each last connected, rename and revoke.
 - **Pair a phone:** a one-time QR code with a countdown.
-- **Network:** listen address and port, nearby pairing, relay.
-- **Web remote**, **Certificate**, **Updates**, **Settings**.
+- **Network:** the address phones use (change it as with `agent-remote address set`), listen address and port, nearby pairing, relay.
+- **Web remote**, **Certificate**, **Updates**, **Settings** (including whether the bridge starts with the computer, and the command that sets it up).
 
 Each section saves only its own settings. Settings that need a restart stay listed in a banner with Restart now until the bridge restarts. The update mode and the web remote's network settings apply at once.
 

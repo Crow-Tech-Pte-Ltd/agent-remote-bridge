@@ -27,7 +27,20 @@ function toast(text, ms = 4000) { const t = $("toast"); (window.__toasts = windo
 function confirmDialog(text, yes) { return new Promise(resolve => { const d = $("confirm"); $("confirm-text").textContent = text; $("confirm-yes").textContent = yes; const done = v => { d.close(); resolve(v); }; $("confirm-yes").onclick = () => done(true); $("confirm-no").onclick = () => done(false); d.oncancel = () => resolve(false); d.showModal(); }); }
 function uuid() { if (crypto.randomUUID) try { return crypto.randomUUID(); } catch {} const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = b[6] & 15 | 64; b[8] = b[8] & 63 | 128; const h = [...b].map(x => x.toString(16).padStart(2, "0")).join(""); return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`; }
 const AGENTS = { claude: "Claude", codex: "Codex", shell: "Terminal", pi: "Pi", qwen: "Qwen", opencode: "OpenCode", copilot: "Copilot", gemini: "Gemini", cursor: "Cursor", kimi: "Kimi", goose: "Goose", aider: "Aider", amp: "Amp" };
-const agentName = p => AGENTS[p.agent] || (p.agent ? p.agent[0].toUpperCase() + p.agent.slice(1) : "Terminal");
+// Names and maker marks from the bridge (kind -> {label, svg?}), loaded once at start; AGENTS is the fallback.
+let MARKS = {};
+const kindName = p => (MARKS[p.agent] && MARKS[p.agent].label) || AGENTS[p.agent] || (p.agent ? p.agent[0].toUpperCase() + p.agent.slice(1) : "Terminal");
+// A pane's label (Herdr's pane label, as in the app) wins over the agent's name.
+const agentName = p => p.label || kindName(p);
+function agentMark(p) {
+  const kind = isAgent(p) ? p.agent : "shell", m = MARKS[kind], tile = el("span", { className: "agent-mark" + (kind === "shell" ? " terminal" : "") });
+  tile.setAttribute("aria-hidden", "true");
+  if (kind === "shell") tile.textContent = ">_";
+  else if (m && m.svg) { const g = el("span", { className: "glyph" }), url = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(m.svg)}")`; g.style.webkitMaskImage = url; g.style.maskImage = url; tile.append(g); }
+  else tile.textContent = kindName(p).slice(0, 1).toUpperCase();
+  if (isAgent(p)) tile.append(el("span", { className: "sdot s-" + (p.status || "unknown") }));
+  return tile;
+}
 const STATUS = { blocked: "Needs input", working: "Working", done: "Finished", idle: "Idle", unknown: "" };
 const isAgent = p => p.kind !== "shell" && p.agent !== "shell";
 const base = path => (path || "").split("/").filter(Boolean).pop() || path || "";
@@ -52,6 +65,8 @@ const v1 = (path, extra, method, body, options) => api("v1/" + path + sessionQue
 // The loopback console is plain HTTP only; the network listener is HTTPS only.
 const loopback = location.protocol === "http:";
 async function start() {
+  // Static and public: the names and marks, so lists can draw before or without signing in.
+  try { MARKS = await (await fetch("/remote/assets/agents.json", { cache: "no-cache" })).json(); } catch { MARKS = {}; }
   const launch = new URLSearchParams(location.hash.slice(1)).get("launch");
   if (launch) history.replaceState(null, "", location.pathname);
   try { const value = await api("api/session"); if (value.signedIn) { me = value; return enter(); } } catch {}
@@ -157,8 +172,8 @@ function section(title, items) { return items.length ? [el("div", { className: "
 function row(p) {
   const status = isAgent(p) ? (STATUS[p.status] ?? p.status) : "", tabInfo = snapshot.tabs.find(t => t.tabId === p.tabId);
   const b = el("button", { type: "button", className: "row-pane", "aria-current": String(!!current && current.paneId === p.paneId) },
-    el("span", { className: "sdot s-" + (isAgent(p) ? p.status || "unknown" : "idle"), "aria-hidden": "true" }),
-    el("span", { className: "name", textContent: agentName(p) }),
+    agentMark(p),
+    el("span", { className: "name" }, agentName(p), p.label && isAgent(p) ? el("span", { className: "kind", textContent: kindName(p) }) : ""),
     el("span", { className: "state" + (p.status === "blocked" ? " blocked" : ""), textContent: status }),
     el("span", { className: "where", textContent: [p.workspaceLabel, tabInfo && (tabInfo.label || (snapshot.tabs.filter(t => t.workspaceId === p.workspaceId).length > 1 ? `Tab ${tabInfo.number}` : "")), base(p.cwd) !== p.workspaceLabel ? base(p.cwd) : ""].filter(Boolean).join(" · ") }));
   b.setAttribute("aria-label", `${agentName(p)}${status ? ", " + status : ""}, ${p.workspaceLabel}`);

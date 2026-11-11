@@ -74,8 +74,23 @@ function copyButton(text, label = "Copy") {
 const copyRow = (text, label, wrap) => el("div", { class: "copy-row" }, el("span", { class: "value" + (wrap ? " wrap" : ""), text, title: text }), copyButton(text, label));
 
 // ---------- formatting ----------
-const AGENT_NAMES = { claude: "Claude", codex: "Codex", pi: "Pi", qwen: "Qwen", opencode: "OpenCode", copilot: "Copilot", gemini: "Gemini", cursor: "Cursor", kimi: "Kimi", goose: "Goose", aider: "Aider", amp: "Amp" };
-const agentName = a => a.label || AGENT_NAMES[a.agent] || (a.agent ? a.agent[0].toUpperCase() + a.agent.slice(1) : "Agent");
+// Agent names and maker marks come from the bridge (/assets/agents.json: kind -> {label, svg?}), the app's own marks.
+let MARKS = {};
+const agentLabel = kind => (MARKS[kind] && MARKS[kind].label) || (kind ? kind[0].toUpperCase() + kind.slice(1) : "Agent");
+const agentName = a => a.label || agentLabel(a.agent);
+function mark(kind, status, small) {
+  const m = MARKS[kind], terminal = !kind || kind === "shell";
+  const tile = el("span", { class: "mark" + (small ? " small" : "") + (terminal ? " terminal" : ""), "aria-hidden": "true" });
+  if (terminal) tile.append(icon("terminal", small ? 15 : 18));
+  else if (m && m.svg) {
+    // A mask filled with the text colour, so every mark follows light and dark mode. CSSOM, not markup: allowed by the CSP.
+    const glyph = el("span", { class: "glyph" }), url = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(m.svg)}")`;
+    glyph.style.webkitMaskImage = url; glyph.style.maskImage = url; tile.append(glyph);
+  } else tile.append(agentLabel(kind).slice(0, 1).toUpperCase());
+  if (status && status !== "terminal" && status !== "unknown") tile.append(el("span", { class: "badge " + status }));
+  return tile;
+}
+const STATES = { blocked: ["Needs input", "blocked"], working: ["Working", "accent"], done: ["Finished", "good"], idle: ["Idle", ""], unknown: ["Running", ""], terminal: ["Terminal", ""] };
 const when = t => { const ms = typeof t === "number" ? t : Date.parse(t); return ms ? new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : ""; };
 const day = t => { const ms = typeof t === "number" ? t : Date.parse(t); return ms ? new Date(ms).toLocaleDateString(undefined, { dateStyle: "medium" }) : ""; };
 function ago(t) {
@@ -88,7 +103,7 @@ function ago(t) {
 }
 function uptime(t) {
   const m = Math.max(0, Math.round((Date.now() - Date.parse(t)) / 60000));
-  if (m < 60) return `${m} min`; const h = Math.floor(m / 60); if (h < 48) return `${h} h ${m % 60} min`; return `${Math.floor(h / 24)} days`;
+  if (m < 1) return "just started"; if (m < 60) return `${m} min`; const h = Math.floor(m / 60); if (h < 48) return `${h} h ${m % 60} min`; return `${Math.floor(h / 24)} days`;
 }
 const daysLeft = t => Math.floor((Date.parse(t) - Date.now()) / 864e5);
 const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -117,15 +132,17 @@ function signedOut(message) {
 }
 
 // ---------- state ----------
-const data = { status: null, config: null, devices: [], agents: null, agentsError: "" };
+const data = { status: null, config: null, devices: [], agents: null, agentsError: "", activity: null, activityError: "", service: null, serviceError: "", address: null, addressError: "" };
 const active = () => data.devices.filter(d => !d.revokedAt);
 async function loadCore() {
   const [status, config, devices] = await Promise.all([api("status"), api("config"), api("devices").catch(e => { if (e.status === 401) throw e; return data.devices; })]);
   Object.assign(data, { status, config, devices });
 }
-async function loadAgents() {
-  try { data.agents = await api("agents"); data.agentsError = ""; }
-  catch (e) { if (e.status === 401) throw e; data.agentsError = e.message; }
+// Each section loads what it shows; agents load everywhere for the sidebar's needs-input count.
+const EXTRA = { overview: ["activity", "service"], network: ["address"], settings: ["service"] };
+async function loadExtra(name) {
+  try { data[name] = await api(name); data[name + "Error"] = ""; }
+  catch (e) { if (e.status === 401) throw e; data[name + "Error"] = e.message; }
 }
 
 // ---------- toast and confirmation ----------
@@ -153,6 +170,7 @@ async function act(work, success) {
 // ---------- navigation ----------
 const SECTIONS = [
   { id: "overview", label: "Overview", icon: "overview", sub: "What's happening on this computer" },
+  { id: "agents", label: "Agents", icon: "agent", sub: "Every agent and terminal on this computer" },
   { id: "devices", label: "Devices", icon: "phone", sub: "Phones and browsers that can reach this bridge" },
   { id: "pair", label: "Pair a phone", icon: "qr", sub: "Add a phone with a one-time QR code" },
   { group: "Access" },
@@ -176,7 +194,7 @@ async function navigate() {
   route = next; closeDrawer(false);
   for (const a of $("nav").querySelectorAll("a")) { if (a.dataset.id === route) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
   const s = section(route); $("title").textContent = s.label; $("subtitle").textContent = s.sub; document.title = `${s.label} · Agent Remote Console`;
-  if (moved) { window.scrollTo(0, 0); renaming = null; }
+  if (moved) { window.scrollTo(0, 0); renaming = null; if (!data.status || route !== "overview") $("content").replaceChildren(...placeholders(route)); }
   await refresh(true);
   if (moved && document.activeElement && document.activeElement.closest && document.activeElement.closest("#nav")) $("content").focus({ preventScroll: true });
   schedulePoll();
@@ -184,21 +202,26 @@ async function navigate() {
 // Only the overview and devices refresh by themselves; form sections never lose what is being typed.
 function schedulePoll() {
   clearTimeout(pollTimer);
-  const every = route === "overview" ? 5000 : route === "devices" ? 10000 : 0; if (!every) return;
+  const every = route === "overview" || route === "agents" ? 5000 : route === "devices" ? 10000 : 0; if (!every) return;
   pollTimer = setTimeout(async () => { if (!document.hidden) await refresh(false); schedulePoll(); }, every);
 }
-document.addEventListener("visibilitychange", () => { if (!document.hidden && (route === "overview" || route === "devices")) refresh(false); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && ["overview", "agents", "devices"].includes(route)) refresh(false); });
 const editing = () => { const a = document.activeElement; return !!a && $("content").contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
 let refreshing = null;
 async function refresh(force) {
   if (refreshing && !force) return refreshing;
   refreshing = (async () => {
-    try { await Promise.all([loadCore(), route === "overview" ? loadAgents() : null]); }
+    try { await Promise.all([loadCore(), loadExtra("agents"), ...(EXTRA[route] || []).map(loadExtra)]); }
     catch (e) { if (e.status !== 401) toast(e.message, true); return; }
     renderChrome();
-    if (force || (!editing() && !renaming)) $("content").replaceChildren(...[].concat(VIEWS[route]()));
+    if (force || (!editing() && !renaming)) $("content").replaceChildren(...[].concat(VIEWS[route]()).filter(Boolean));
   })();
   try { await refreshing; } finally { refreshing = null; }
+}
+function placeholders(id) {
+  const block = () => el("div", { class: "skeleton block", "aria-hidden": "true" });
+  return id === "overview" ? [el("div", { class: "tiles" }, [0, 1, 2, 3].map(() => el("div", { class: "skeleton tile", "aria-hidden": "true" }))), el("div", { class: "grid-2" }, block(), block())]
+    : [block()];
 }
 
 // ---------- drawer (phone width) ----------
@@ -220,11 +243,13 @@ function renderChrome() {
   $("host-dot").className = "dot " + (s.running ? "good" : "warn");
   $("host-state").textContent = s.running ? `Running · ${uptime(b.startedAt)}` : "Restarting…";
   $("version").textContent = "Bridge " + (s.version || "");
-  const counts = { devices: [active().length, false], updates: [u.available ? 1 : 0, true] };
+  const waiting = data.agents && data.agents.counts ? data.agents.counts.needsInput : 0;
+  const counts = { agents: [waiting, true], devices: [active().length, false], updates: [u.available ? 1 : 0, true] };
   for (const a of $("nav").querySelectorAll("a")) {
     const c = a.querySelector(".count"), entry = counts[a.dataset.id];
     c.hidden = !entry || !entry[0]; if (entry) { c.textContent = String(entry[0]); c.classList.toggle("alert", entry[1]); }
     if (a.dataset.id === "updates") a.setAttribute("aria-label", u.available ? `Updates, ${u.latest} available` : "Updates");
+    if (a.dataset.id === "agents") a.setAttribute("aria-label", waiting ? `Agents, ${waiting} need${waiting === 1 ? "s" : ""} input` : "Agents");
   }
   const banners = [];
   if (!s.running) banners.push(banner("bad", "alert", "The bridge is restarting", "Phones reconnect by themselves once it is back."));
@@ -251,7 +276,7 @@ function reach(s) {
   if (lan.length) return { value: "Home network", detail: lan[0] + (lan.length > 1 ? ` and ${lan.length - 1} more` : ""), tone: "good" };
   return { value: "This computer", detail: "Join a relay or listen on the network", tone: "warn" };
 }
-function routeList(s) {
+function routeList(s, single) {
   const b = s.bridge || {}, r = s.relay, w = s.web || {}, lan = (b.localAddresses || []).map(hostOf);
   const items = [
     ["home", "Home network", lan.length ? lan.join(", ") : `Off: the bridge listens on ${b.listen || "this computer"} only`, lan.length ? ["On", "good"] : ["Off", ""]],
@@ -259,7 +284,7 @@ function routeList(s) {
     ["cloud", "Relay", r ? (r.connected ? `Connected to ${r.host}` : `Not connected: ${r.lastError || "retrying"}`) : "Not joined: phones away from home can't connect", r ? (r.connected ? ["Connected", "good"] : ["Offline", "bad"]) : ["Off", ""]],
     ["browser", "Web remote on the network", w.lan ? `HTTPS on port ${w.lanPort}, with a password` : "Only on this computer", w.lan ? ["On", "good"] : ["Off", ""]],
   ];
-  return el("div", { class: "routes" }, items.map(([ic, title, text, [state, tone]]) =>
+  return el("div", { class: "routes" + (single ? " single" : "") }, items.map(([ic, title, text, [state, tone]]) =>
     el("div", { class: "row" }, el("span", { class: "avatar" + (tone === "good" ? " good" : tone === "bad" ? " warn" : "") }, icon(ic)),
       el("div", { class: "main-text" }, el("strong", { text: title }), el("span", { text, title: text })), pill(state, tone))));
 }
@@ -267,6 +292,7 @@ function deviceAvatar(d) {
   return el("span", { class: "avatar" + (d.connected ? " accent" : "") }, icon(d.kind === "browser" ? "browser" : "phone"), d.connected ? el("span", { class: "presence", title: "Connected now" }) : null);
 }
 const accessPill = d => d.scope === "control" ? pill("Can control", "accent") : pill("Read only");
+const lastSeen = d => d.connected ? "Connected now" : d.seenAt ? `Last connected ${ago(d.seenAt)}` : "Not connected yet";
 const paneLink = id => "/remote/#/pane/" + encodeURIComponent(id) + "/terminal";
 
 // ---------- Overview ----------
@@ -279,14 +305,14 @@ function viewOverview() {
         c.finished ? item("good", `${c.finished} finished`) : null, !c.needsInput && !c.working && !c.finished ? `${c.idle} idle` : null])
     : [data.agentsError ? "Unavailable right now" : "Loading…"];
   const tiles = el("div", { class: "tiles" },
-    tile("/remote/", "agent", c && c.needsInput ? "blocked" : "", "Agents", c ? String(c.agents) : "–", agentDetail, { target: "agent-remote" }),
+    tile("#/agents", "agent", c && c.needsInput ? "blocked" : "", "Agents", c ? String(c.agents) : "–", agentDetail),
     tile("#/devices", "phone", online ? "good" : "", "Devices", String(devices.length), [online ? item("good", `${online} connected now`) : "None connected now"]),
     tile("#/network", "network", where.tone === "warn" ? "warn" : "good", "Reachable from", where.value, [where.detail], {}, true),
     tile("#/certificate", "shield", left !== null && left < 30 ? "warn" : "good", "Certificate", left === null ? "–" : plural(left, "day"), [cert.expiresAt ? "Valid until " + day(cert.expiresAt) : ""]));
 
   const attention = (a && a.attention) || [];
   const attentionBody = attention.length ? el("div", { class: "rows" }, attention.map(p => el("div", { class: "row" },
-      el("span", { class: "avatar " + (p.status === "blocked" ? "blocked" : "good") }, icon(p.status === "blocked" ? "bell" : "check")),
+      mark(p.agent, p.status),
       el("div", { class: "main-text" }, el("strong", { text: agentName(p) }),
         el("span", {}, el("span", { class: "show-narrow", text: (p.status === "blocked" ? "Needs input" : "Finished") + " · " }), [p.workspace, p.folder !== p.workspace ? p.folder : ""].filter(Boolean).join(" · ") || "Workspace")),
       p.lastMessageAt ? el("span", { class: "aside hide-narrow", text: ago(p.lastMessageAt) }) : null,
@@ -300,12 +326,100 @@ function viewOverview() {
   const recent = devices.slice().sort((x, y) => (y.connected - x.connected) || (y.createdAt - x.createdAt)).slice(0, 5);
   const devicesCard = card({ title: "Devices", actions: link("#/devices", "All devices"),
     body: recent.length ? el("div", { class: "rows" }, recent.map(d => el("div", { class: "row" }, deviceAvatar(d),
-        el("div", { class: "main-text" }, el("strong", { text: d.name }), el("span", { text: d.connected ? "Connected now" : `Paired ${ago(d.createdAt)}` })), accessPill(d))))
+        el("div", { class: "main-text" }, el("strong", { text: d.name }), el("span", { text: d.connected || d.seenAt ? lastSeen(d) : `Paired ${ago(d.createdAt)}` })), accessPill(d))))
       : el("div", { class: "empty" }, el("span", { class: "avatar accent" }, icon("phone", 22)), el("strong", { text: "No phones paired yet" }), el("span", { text: "Pair one with a QR code to get started." })),
     foot: [el("a", { class: "button", href: "#/pair" }, icon("qr", 16), "Pair a phone")] });
 
-  return [tiles, el("div", { class: "grid-2" }, attentionCard, devicesCard),
-    card({ title: "How phones reach this computer", actions: link("#/network", "Network settings"), body: routeList(s) })];
+  return [setupCard(), tiles, el("div", { class: "grid-2" }, attentionCard, devicesCard),
+    el("div", { class: "grid-2" }, activityCard(), card({ title: "How phones reach this computer", actions: link("#/network", "Network"), body: routeList(s, true) }))];
+}
+// ---------- Get set up (Overview, until done or hidden) ----------
+function setupCard() {
+  const s = data.status, host = (s.bridge || {}).hostId || "", hiddenKey = "hmr-console-setup-hidden:" + host, vpnKey = "hmr-console-vpn:" + host;
+  if (!data.status.bridge || localStorage.getItem(hiddenKey)) return null;
+  const phones = active().filter(d => d.kind !== "browser").length, v = data.service, away = !!s.relay || localStorage.getItem(vpnKey) === "1";
+  const starts = !!(v && v.available && v.installed && v.enabled);
+  const tasks = [
+    { done: phones > 0, title: "Pair your first phone", text: phones ? `${plural(phones, "phone")} paired` : "Scan a QR code with AI Agent Remote, or pair nearby with a 6-digit code.",
+      actions: [el("a", { class: "button small primary", href: "#/pair" }, "Pair a phone")] },
+    // Container and unusual systems can't install a user service: that step isn't theirs to do.
+    v && v.available === false ? null : { done: starts, title: "Start the bridge with this computer",
+      text: starts ? (v.startsAt === "boot" ? "It starts when the computer starts." : "It starts when you log in.") : "One command installs it as a service, so phones always find it.",
+      actions: [el("a", { class: "button small", href: "#/settings" }, "Show how")] },
+    { done: away, title: "Reach it away from home", text: s.relay ? `Through the relay ${s.relay.host}.` : away ? "Through your own VPN." : "Join a relay, or connect your phone to your own VPN.",
+      actions: [el("a", { class: "button small", href: "#/network" }, "Set up a relay"), el("button", { type: "button", class: "button small ghost", onclick: () => { localStorage.setItem(vpnKey, "1"); refresh(true); } }, "I use a VPN")] },
+  ].filter(Boolean);
+  const done = tasks.filter(t => t.done).length; if (done === tasks.length) return null;
+  return card({ title: "Get set up", className: "setup", actions: el("button", { type: "button", class: "button ghost small", onclick: () => { localStorage.setItem(hiddenKey, "1"); refresh(true); } }, "Hide"),
+    body: [el("div", { class: "progress" }, meter(done / tasks.length), `${done} of ${tasks.length} done`),
+      el("ol", { class: "tasks" }, tasks.map(t => el("li", { class: "task" + (t.done ? " done" : "") }, el("span", { class: "tick" }, icon("check", 15)),
+        el("div", { class: "main-text" }, el("strong", { text: t.title }), el("span", { text: t.text })), t.done ? null : el("div", { class: "actions" }, t.actions))))] });
+}
+// ---------- Recent activity ----------
+const SETTING_LIST = keys => (keys || "").split(",").filter(Boolean).map(k => SETTING_NAMES[k] || SETTING_EXTRA[k] || k).join(", ");
+const SETTING_EXTRA = { console: "console", consolePort: "console port", updates: "automatic updates", webLan: "web remote on the network", webPort: "web remote port", webScope: "web remote access", webListen: "web remote address" };
+const ACTIVITY = {
+  paired: ["phone", "good", e => `${e.name} paired`, e => e.detail === "read" ? "Read only" : "Can control"],
+  signed_in: ["browser", "accent", e => `${e.name} signed in`, e => e.detail === "read" ? "Read only" : "Can control"],
+  revoked: ["close", "bad", e => `${e.name} revoked`],
+  connected: ["phone", "accent", e => `${e.name} connected`],
+  renamed: ["pencil", "", e => `A device was renamed ${e.name}`],
+  started: ["power", "good", e => `Bridge ${e.detail || ""} started`],
+  updated: ["download", "accent", e => `Bridge updated, ${e.detail || ""}`],
+  restarted: ["refresh", "", () => "Restarted with the saved settings"],
+  relay_connected: ["cloud", "good", e => `Connected to the relay${e.detail ? " " + e.detail : ""}`],
+  relay_lost: ["cloud", "warn", () => "Lost the relay connection", () => "Retrying by itself"],
+  certificate_renewed: ["shield", "good", () => "New certificate created", () => "Phones switch to it by themselves"],
+  settings_saved: ["sliders", "", e => `Changed ${SETTING_LIST(e.detail)}`],
+  address_changed: ["network", "", e => `Invitations now use ${e.detail}`],
+};
+let activityAll = false;
+function activityCard() {
+  const events = ((data.activity && data.activity.events) || []).filter(e => ACTIVITY[e.kind]), shown = events.slice(0, activityAll ? 25 : 7);
+  const body = shown.length ? el("div", { class: "feed rows" }, shown.map(e => { const [ic, tone, text, sub] = ACTIVITY[e.kind];
+      return el("div", { class: "row" }, el("span", { class: "avatar" + (tone ? " " + tone : "") }, icon(ic, 16)),
+        el("div", { class: "main-text" }, el("strong", { text: text(e), title: text(e) }), sub ? el("span", { text: sub(e) }) : null),
+        el("span", { class: "aside", text: ago(e.at), title: when(e.at) })); }))
+    : el("div", { class: "empty" }, el("span", { class: "avatar accent" }, icon("bell", 22)), el("strong", { text: data.activityError ? "Activity is unavailable" : "Nothing yet" }),
+      el("span", { text: data.activityError || "Pairings, connections, updates and changes show up here." }));
+  return card({ title: "Recent activity", body,
+    foot: events.length > 7 ? [el("button", { type: "button", class: "button small ghost", onclick: () => { activityAll = !activityAll; refresh(true); } }, activityAll ? "Show less" : `Show ${Math.min(25, events.length) - 7} more`)] : null });
+}
+
+// ---------- Agents ----------
+let agentFilter = "all", agentQuery = "";
+const AGENT_FILTERS = [["all", "All"], ["blocked", "Needs input"], ["working", "Working"], ["done", "Finished"], ["idle", "Idle"], ["terminal", "Terminals"]];
+const bucket = p => p.status === "unknown" ? "idle" : p.status;
+function viewAgents() {
+  const a = data.agents;
+  if (!a) return [card({ body: el("div", { class: "empty" }, el("span", { class: "avatar warn" }, icon("alert", 22)), el("strong", { text: "Agents are unavailable" }), el("span", { text: data.agentsError || "Loading…" })) })];
+  const panes = a.panes || [], counts = Object.fromEntries(AGENT_FILTERS.map(([k]) => [k, k === "all" ? panes.length : panes.filter(p => bucket(p) === k).length]));
+  const filters = el("div", { class: "segmented", role: "group", "aria-label": "Show" }, AGENT_FILTERS.filter(([k]) => k === "all" || counts[k] || agentFilter === k).map(([key, label]) =>
+    el("button", { type: "button", "aria-pressed": String(agentFilter === key), onclick: () => { agentFilter = key; refresh(true); } }, label, el("span", { class: "n", text: String(counts[key]) }))));
+  const list = el("div", { class: "agent-groups" }), draw = () => list.replaceChildren(...agentGroups(panes));
+  const search = el("input", { type: "text", value: agentQuery, placeholder: "Find by name or folder", "aria-label": "Find agents", autocomplete: "off" });
+  search.addEventListener("input", () => { agentQuery = search.value; draw(); });
+  draw();
+  return [el("div", { class: "toolbar" }, filters, el("span", { class: "spacer" }), el("label", { class: "search" }, search), el("a", { class: "button hide-narrow", href: "/remote/", target: "agent-remote" }, icon("external", 16), "Web remote")), list];
+}
+function agentGroups(panes) {
+  const q = agentQuery.trim().toLowerCase();
+  const shown = panes.filter(p => (agentFilter === "all" || bucket(p) === agentFilter) && (!q || [agentName(p), agentLabel(p.agent), p.workspace, p.folder].some(x => (x || "").toLowerCase().includes(q))));
+  if (!shown.length) return [card({ body: el("div", { class: "empty" }, el("span", { class: "avatar accent" }, icon("agent", 22)),
+    el("strong", { text: panes.length ? "No agents match" : "No terminals yet" }), el("span", { text: panes.length ? "Try another filter or search." : "Start an agent in Herdr, Orca or a terminal the bridge runs, and it shows up here." })) })];
+  const groups = new Map();
+  for (const p of shown) { const key = p.workspaceId || p.workspace || "—"; if (!groups.has(key)) groups.set(key, { name: p.workspace || "Workspace", panes: [] }); groups.get(key).panes.push(p); }
+  return [...groups.values()].map(g => el("section", { class: "card", "aria-label": g.name },
+    el("div", { class: "group-head" }, el("h2", { text: g.name }), el("span", { class: "n", text: plural(g.panes.length, g.panes.length === 1 && g.panes[0].status === "terminal" ? "terminal" : "pane") })),
+    el("div", { class: "rows agent-rows" }, g.panes.map(agentRow))));
+}
+function agentRow(p) {
+  const [state, tone] = STATES[p.status] || ["", ""], terminal = p.status === "terminal", name = terminal ? p.label || "Terminal" : agentName(p);
+  return el("div", { class: "row agent-row", "data-pane": p.paneId }, mark(p.agent, p.status),
+    el("div", { class: "main-text" }, el("strong", { text: name, title: name }), el("span", {}, [p.label && !terminal ? agentLabel(p.agent) : "", p.folder].filter(Boolean).join(" · "), state && !terminal ? el("span", { class: "show-narrow", text: " · " + state }) : null)),
+    el("span", { class: "when", text: p.lastMessageAt ? ago(p.lastMessageAt) : "", title: p.lastMessageAt ? "Last message " + when(p.lastMessageAt) : "" }),
+    el("span", { class: "state" }, terminal ? null : pill(state, tone)),
+    el("a", { class: "button small", href: paneLink(p.paneId), target: "agent-remote", "aria-label": `Open ${name} in the web remote` }, "Open"));
 }
 function tile(href, iconName, tone, label, value, detail, extra = {}, textValue = false) {
   return el("a", { class: "card tile", href, ...extra },
@@ -326,7 +440,7 @@ function viewDevices() {
   const rows = shown.map(deviceRow);
   const table = card({ className: "table-card", body: null });
   table.append(el("div", { class: "table", role: "list" },
-    el("div", { class: "table-head", "aria-hidden": "true" }, el("span", { text: "Device" }), el("span", { text: "Access" }), el("span", { text: "Paired" }), el("span", { text: "Status" }), el("span")),
+    el("div", { class: "table-head", "aria-hidden": "true" }, el("span", { text: "Device" }), el("span", { text: "Access" }), el("span", { text: "Paired" }), el("span", { text: "Last connected" }), el("span")),
     rows.length ? rows : el("div", { class: "empty" }, el("span", { class: "avatar accent" }, icon("phone", 22)),
       el("strong", { text: live.length ? "No devices match" : "No phones paired yet" }), el("span", { text: live.length ? "Try another filter." : "Pair a phone with a QR code, or sign in to the web remote." }))));
   const note = el("p", { class: "help", text: "Each phone and each browser signed in to the web remote is a device. Revoking one stops it at once: its connections close and it must pair or sign in again." });
@@ -336,7 +450,7 @@ function deviceRow(d) {
   const nameLine = renaming === d.id ? renameForm(d) : el("div", { class: "name-line" }, el("strong", { text: d.name, title: d.name }),
     d.revokedAt ? null : el("button", { type: "button", class: "button ghost small icon-button", "aria-label": `Rename ${d.name}`, title: "Rename", onclick: () => { renaming = d.id; refresh(true).then(() => { const i = document.querySelector(".rename input"); if (i) { i.focus(); i.select(); } }); } }, icon("pencil", 15)));
   const status = d.revokedAt ? el("span", { class: "status bad" }, "Revoked " + ago(d.revokedAt))
-    : d.connected ? el("span", { class: "status good" }, el("span", { class: "dot good" }), "Connected now") : el("span", { class: "status" }, "Not connected");
+    : d.connected ? el("span", { class: "status good" }, el("span", { class: "dot good" }), "Connected now") : el("span", { class: "status", title: d.seenAt ? when(d.seenAt) : "" }, lastSeen(d));
   return el("div", { class: "device" + (d.revokedAt ? " revoked" : ""), role: "listitem", "data-device": d.id },
     el("div", { class: "who" }, deviceAvatar(d), el("div", { class: "main-text" }, nameLine, el("span", { text: d.kind === "browser" ? "Browser · web remote" : "Phone" }))),
     el("div", { class: "meta" }, el("span", { class: "cell" }, accessPill(d)), el("span", { class: "when", title: when(d.createdAt), text: ago(d.createdAt) }), status),
@@ -483,7 +597,22 @@ function viewNetwork() {
         if (await act(() => api("relay/join", "POST", { profile: text.value }), "Joined. Restart the bridge to connect.")) { text.value = ""; refresh(true); }
       } }, icon("cloud", 16), "Join relay")] });
   }
-  return [card({ title: "Reaching this computer", body: routeList(s) }), el("div", { class: "grid-even" }, connection, nearby), relay];
+  return [card({ title: "Reaching this computer", body: routeList(s) }), el("div", { class: "grid-even" }, addressCard(), connection), el("div", { class: "grid-even" }, nearby, relay)];
+}
+
+function addressCard() {
+  const a = data.address;
+  if (!a) return card({ title: "Address phones use", body: el("p", { class: "muted", text: data.addressError || "Loading…" }) });
+  const input = el("input", { type: "text", placeholder: "studio.local or 192.168.1.40", "aria-label": "New address", autocomplete: "off", spellcheck: "false" });
+  return card({ title: "Address phones use", sub: "New invitations carry it. Paired phones keep their pairing.", body: [
+    copyRow(a.url, "Copy address"),
+    a.addresses && a.addresses.length ? el("p", { class: "help", text: "Phones also try " + a.addresses.map(hostOf).join(", ") + " when it doesn't answer, for example on a VPN." }) : null,
+    el("form", { class: "copy-row", onsubmit: async e => {
+      e.preventDefault(); const address = input.value.trim(); if (!address) return;
+      const r = await act(() => api("address", "POST", { address }), v => v.changed ? `New invitations use ${hostOf(v.url)}.` : "That is already the address.");
+      if (r) { input.value = ""; refresh(true); }
+    } }, input, el("button", { type: "submit", class: "button" }, "Change")),
+    el("p", { class: "help", text: "It must be a name or address in the certificate: " + (a.certificateCovers || []).join(", ") + "." }) ] });
 }
 
 // ---------- Web remote ----------
@@ -579,7 +708,23 @@ function viewSettings() {
   ], { help: "Takes effect the next time the bridge starts.", after: "Saved. The console uses it the next time the bridge starts." }) });
   const restart = card({ title: "Restart the bridge", body: el("p", { class: "muted", text: "Applies saved settings. Phones lose the connection for a few seconds and reconnect by themselves." + (plain ? " The terminals this bridge started will close." : "") }),
     foot: [el("span", { class: "spacer" }), el("button", { type: "button", class: "button", onclick: restartBridge }, icon("power", 16), "Restart bridge")] });
-  return [el("div", { class: "grid-even" }, computer, consoleCard), el("div", { class: "grid-even" }, terminals, restart)];
+  return [el("div", { class: "grid-even" }, computer, serviceCard()), el("div", { class: "grid-even" }, terminals, consoleCard), restart];
+}
+function serviceCard() {
+  const v = data.service, title = "Start with this computer";
+  if (!v) return card({ title, body: el("p", { class: "muted", text: data.serviceError || "Checking…" }) });
+  if (!v.available) return card({ title, actions: pill("Not available"), body: el("p", { class: "muted", text: v.reason }) });
+  const on = v.installed && v.enabled;
+  const state = on ? pill(v.startsAt === "boot" ? "Starts with the computer" : "Starts when you log in", "good") : v.installed ? pill("Installed, not enabled", "warn") : pill("Not set up");
+  if (on) return card({ title, actions: state, body: [el("dl", { class: "kv" },
+      el("dt", { text: "Service" }), el("dd", { text: v.service }),
+      el("dt", { text: "Running" }), el("dd", { text: v.running ? (v.thisBridge ? "Yes, this bridge" : `Yes, process ${v.pid}`) : "No" }),
+      el("dt", { text: "File" }), el("dd", {}, el("span", { class: "mono", text: v.file }))),
+    v.next ? el("p", { class: "note" }, icon("info", 16), el("span", { text: v.next })) : null] });
+  return card({ title, actions: state, body: [
+    el("p", { class: "muted", text: "Run this in a terminal on this computer. It installs a user service that starts the bridge with the computer and restarts it if it stops." }),
+    copyRow("agent-remote service install", "Copy command"),
+    el("p", { class: "note" }, icon("info", 16), el("span", { text: "Started this bridge by hand? Stop it first (Ctrl-C). The service takes over with the same settings and paired phones." }))] });
 }
 async function restartBridge() {
   const plain = ((data.status || {}).bridge || {}).backend === "plain";
@@ -588,7 +733,7 @@ async function restartBridge() {
   if (await act(() => api("restart", "POST", {}), "Bridge restarted.")) await refresh(true);
 }
 
-const VIEWS = { overview: viewOverview, devices: viewDevices, pair: viewPair, network: viewNetwork, web: viewWeb, certificate: viewCertificate, updates: viewUpdates, settings: viewSettings };
+const VIEWS = { overview: viewOverview, agents: viewAgents, devices: viewDevices, pair: viewPair, network: viewNetwork, web: viewWeb, certificate: viewCertificate, updates: viewUpdates, settings: viewSettings };
 
 // ---------- start ----------
 for (const n of document.querySelectorAll("[data-icon]")) n.replaceWith(icon(n.dataset.icon));
@@ -597,7 +742,7 @@ $("menu").addEventListener("click", openDrawer);
 $("drawer-close").addEventListener("click", () => closeDrawer());
 $("scrim").addEventListener("click", () => closeDrawer());
 document.addEventListener("keydown", e => { if (e.key === "Escape" && shell().classList.contains("drawer-open")) closeDrawer(); });
-$("refresh").addEventListener("click", async () => { await refresh(true); toast("Refreshed."); });
+$("refresh").addEventListener("click", async () => { const b = $("refresh"); b.classList.add("spinning"); try { await refresh(true); } finally { setTimeout(() => b.classList.remove("spinning"), 300); } });
 (async () => {
   const launch = new URLSearchParams(location.hash.slice(1)).get("launch");
   if (launch) history.replaceState(null, "", location.pathname + "#/overview");
@@ -606,6 +751,7 @@ $("refresh").addEventListener("click", async () => { await refresh(true); toast(
       : await fetch("/api/session", { credentials: "same-origin" });
     const v = await r.json(); if (!r.ok) throw new Error(v.error); csrf = v.csrf;
   } catch (e) { $("gate").hidden = false; if (launch && e.message) $("gate-text").textContent = e.message; return; }
+  try { MARKS = await (await fetch("/assets/agents.json", { cache: "no-cache" })).json(); } catch { MARKS = {}; }
   $("app").hidden = false;
   window.addEventListener("hashchange", navigate);
   await navigate();

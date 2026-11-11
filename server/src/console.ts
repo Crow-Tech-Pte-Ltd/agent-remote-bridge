@@ -13,7 +13,10 @@ import { relayProfile, readRelayProfile } from "./relay";
 import { connectionProfile, type HostConnection } from "./connection";
 import { certificateStatus, renewCertificate } from "./certificate";
 import type { Services } from "./services";
-import { consolePage, consoleScript, consoleStyles, appIcon } from "./web/assets";
+import { consolePage, consoleScript, consoleStyles, appIcon, agentMarks } from "./web/assets";
+import { recent, record } from "./activity";
+import { addressReport, setAddress } from "./addresses";
+import { defaultEnvironment, serviceStatus, type ServiceEnvironment } from "./service";
 import type { BridgeRelease } from "./updates";
 import { createRemote, hasWebPassword, setWebPassword } from "./web";
 
@@ -46,7 +49,9 @@ const fail=(status:number,message:string)=>{throw new ConsoleError(status,messag
 interface Session {csrf:string;expires:number}
 export interface ConsoleOptions {directory:string;port:number;services:()=>Services|undefined;restart:()=>Promise<void>;saved?:(keys:string[])=>void;effective?:()=>Partial<Config>;version:string;
   /** Bridge self-updates (serve only): status, and Update now. */
-  updates?:{status():BridgeRelease;update():Promise<BridgeRelease>}}
+  updates?:{status():BridgeRelease;update():Promise<BridgeRelease>};
+  /** Where `service status` looks (tests pass a stand-in). */
+  serviceEnvironment?:()=>ServiceEnvironment}
 export function startConsole(options:ConsoleOptions) {
   const {directory}=options,sessions=new Map<string,Session>();
   let failures=0,failureWindow=Date.now(),server:ReturnType<typeof Bun.serve>|undefined;
@@ -118,6 +123,7 @@ export function startConsole(options:ConsoleOptions) {
       const before=loadConfig(directory),value=await body(request),next=merge(before,value,directory);saveConfig(directory,next);
       const changed=Object.keys(value).filter(key=>JSON.stringify((before as unknown as Record<string,unknown>)[key])!==JSON.stringify((next as unknown as Record<string,unknown>)[key]));
       options.saved?.(changed);
+      if(changed.length)record(directory,{kind:"settings_saved",detail:changed.join(",")});
       // The web remote's network listener and the update mode follow the saved config at once.
       if(changed.some(key=>key.startsWith("web")))remote.reload();
       const pending=restartPending();
@@ -134,19 +140,29 @@ export function startConsole(options:ConsoleOptions) {
       remote.reload();return json({set:password!==null});
     }
     if(url.pathname==="/api/devices"&&!write) {
-      const services=running(),browsers=new Set(remote.sessions().map(s=>s.deviceId)),live=services.bridge.connected();
-      return json(services.state.devices().map(({id,name,scope,createdAt,revokedAt})=>({id,name,scope,createdAt,revokedAt,kind:browsers.has(id)?"browser":"phone",connected:!revokedAt&&live.has(id)})));
+      const services=running(),browsers=new Set(remote.sessions().map(s=>s.deviceId)),live=services.bridge.connected(),seen=services.state.seen();
+      return json(services.state.devices().map(({id,name,scope,createdAt,revokedAt})=>({id,name,scope,createdAt,revokedAt,kind:browsers.has(id)||isBrowserName(name)?"browser":"phone",connected:!revokedAt&&live.has(id),seenAt:seen.get(id)??null})));
     }
     if(parts[1]==="devices"&&parts.length===4&&request.method==="POST") {
       const id=parts[2]!;if(!/^[0-9a-f-]{36}$/.test(id))fail(400,"Invalid device");
       if(parts[3]==="revoke"){running().bridge.revoke(id);return json({revoked:true});}
-      if(parts[3]==="rename"){const {name}=await body(request);if(typeof name!=="string"||!name.trim()||name.length>100)fail(400,"Invalid name");return json({renamed:running().state.rename(id,(name as string).trim())});}
+      if(parts[3]==="rename"){const {name}=await body(request);if(typeof name!=="string"||!name.trim()||name.length>100)fail(400,"Invalid name");
+        const renamed=running().state.rename(id,(name as string).trim());if(renamed)record(directory,{kind:"renamed",device:id,name:(name as string).trim()});return json({renamed});}
     }
     if(url.pathname==="/api/pair"&&request.method==="POST") {
       const {scope,ttl}=await body(request);if(scope!=="read"&&scope!=="control")fail(400,"Scope must be read or control");
       const seconds=Number(ttl??300);if(!Number.isInteger(seconds)||seconds<60||seconds>3600)fail(400,"Lifetime must be 60 to 3600 seconds");
       return json(await invitation(scope as "read"|"control",seconds));
     }
+    if(url.pathname==="/api/activity"&&!write)return json(activity());
+    if(url.pathname==="/api/address"&&!write)return json(addressReport(directory,loadConfig(directory)));
+    if(url.pathname==="/api/address"&&request.method==="POST") {
+      const {address}=await body(request);if(typeof address!=="string"||!address.trim()||address.length>300)fail(400,"Type an address, such as studio.local or 192.168.1.40");
+      let result;try{result=setAddress(directory,loadConfig(directory),(address as string).trim());}catch(error){return fail(400,error instanceof Error?error.message:"Invalid address");}
+      if(result.changed)record(directory,{kind:"address_changed",detail:new URL(result.url).host});
+      return json(result);
+    }
+    if(url.pathname==="/api/service"&&!write)return json(service());
     if(url.pathname==="/api/relay/join"&&request.method==="POST") {
       const {profile}=await body(request);let parsed;
       try{parsed=relayProfile(typeof profile==="string"?JSON.parse(profile):profile);}catch(error){return fail(400,error instanceof Error?error.message:"Invalid relay profile");}
@@ -155,9 +171,27 @@ export function startConsole(options:ConsoleOptions) {
     if(url.pathname==="/api/relay/leave"&&request.method==="POST"){const file=join(directory,"relay.json");if(existsSync(file))unlinkSync(file);return json({left:true,restartRequired:true});}
     if(url.pathname==="/api/certificate/renew"&&request.method==="POST") {
       const {days}=await body(request),value=Number(days??14);if(!Number.isFinite(value)||value<0||value>365)fail(400,"Days must be 0 to 365");
-      await renewCertificate(loadConfig(directory),running().state.hostId,new Date(Date.now()+value*86_400_000));return json({renewed:true});
+      await renewCertificate(loadConfig(directory),running().state.hostId,new Date(Date.now()+value*86_400_000));record(directory,{kind:"certificate_renewed"});return json({renewed:true});
     }
     return fail(404,"Unknown console route");
+  }
+  /** Pairings and revocations from state.sqlite (they survive restarts) merged with this process's events. */
+  function activity() {
+    const services=options.services(),events:{at:number;kind:string;device?:string;name?:string;detail?:string}[]=[...recent(directory,60)];
+    if(services)for(const d of services.state.devices()){
+      events.push({at:d.createdAt,kind:isBrowserName(d.name)?"signed_in":"paired",device:d.id,name:d.name,detail:d.scope});
+      if(d.revokedAt)events.push({at:d.revokedAt,kind:"revoked",device:d.id,name:d.name});
+    }
+    return {events:events.sort((a,b)=>b.at-a.at).slice(0,40)};
+  }
+  // `service status` runs systemctl or launchctl, so the console asks at most every 30 seconds.
+  let serviceCache:{at:number;value:Record<string,unknown>}|undefined;
+  function service() {
+    if(serviceCache&&Date.now()-serviceCache.at<30_000)return serviceCache.value;
+    let value:Record<string,unknown>;
+    try{const result=serviceStatus((options.serviceEnvironment??defaultEnvironment)());value={available:true,...result,thisBridge:!!result.pid&&result.pid===process.pid};}
+    catch(error){value={available:false,reason:error instanceof Error?error.message:"Services aren't available here"};}
+    serviceCache={at:Date.now(),value};return value;
   }
   function status() {
     const services=options.services(),config=loadConfig(directory),relayFile=join(directory,"relay.json");
@@ -188,7 +222,7 @@ export function startConsole(options:ConsoleOptions) {
 }
 // The page and its files: static, no secrets, so they are served before the session check (Host is checked first).
 const CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
-const PAGES:Record<string,[string|Uint8Array,string]>={"/":[consolePage,"text/html; charset=utf-8"],"/assets/console.js":[consoleScript,"text/javascript; charset=utf-8"],"/assets/console.css":[consoleStyles,"text/css; charset=utf-8"],"/assets/icon.png":[appIcon,"image/png"]};
+const PAGES:Record<string,[string|Uint8Array,string]>={"/":[consolePage,"text/html; charset=utf-8"],"/assets/console.js":[consoleScript,"text/javascript; charset=utf-8"],"/assets/console.css":[consoleStyles,"text/css; charset=utf-8"],"/assets/icon.png":[appIcon,"image/png"],"/assets/agents.json":[agentMarks,"application/json; charset=utf-8"]};
 /** Settings that apply without a restart: the update mode is read at every check, the web remote reloads its listener. */
 const LIVE=new Set<string>(["updates","webLan","webListen","webPort","webScope"]);
 /** The console itself is started once per process: these apply the next time the bridge starts. */
@@ -197,13 +231,17 @@ const NEXT_START=new Set<string>(["console","consolePort"]);
 const DEFAULTS:Partial<Record<string,unknown>>={discoverable:false,nearbyScope:"control",localRoute:true,console:true,consolePort:8790,updates:"auto",webLan:false,webPort:8791,webScope:"control",session:null};
 /** Counts and the agents waiting for the owner, from a snapshot. Names and places only: no screen text. */
 export function agentSummary(snapshot:Record<string,unknown>) {
-  type Pane={paneId?:string;agent?:string;kind?:string;status?:string;label?:string;workspaceLabel?:string;cwd?:string;lastMessageAt?:string};
+  type Pane={paneId?:string;agent?:string;kind?:string;status?:string;label?:string;workspaceId?:string;workspaceLabel?:string;tabId?:string;cwd?:string;lastMessageAt?:string};
   const list=(key:string)=>Array.isArray(snapshot[key])?snapshot[key] as Pane[]:[];
   const all=[...list("agents"),...list("shellPanes")],agents=all.filter(p=>p.kind!=="shell"&&p.agent!=="shell");
   const count=(status:string)=>agents.filter(p=>p.status===status).length,rank=(p:Pane)=>p.status==="blocked"?0:1,time=(p:Pane)=>Date.parse(p.lastMessageAt??"")||0;
   const attention=agents.filter(p=>p.status==="blocked"||p.status==="done").sort((a,b)=>rank(a)-rank(b)||time(b)-time(a)).slice(0,8)
     .map(p=>({paneId:p.paneId,agent:p.agent,status:p.status,...(p.label?{label:p.label}:{}),workspace:p.workspaceLabel??"",folder:(p.cwd??"").split("/").filter(Boolean).pop()??"",...(p.lastMessageAt?{lastMessageAt:p.lastMessageAt}:{})}));
-  return {counts:{agents:agents.length,needsInput:count("blocked"),working:count("working"),finished:count("done"),idle:agents.length-count("blocked")-count("working")-count("done"),terminals:all.length-agents.length},attention};
+  // Every pane, for the Agents section: the same fields, never its title or screen text.
+  const panes=all.map(p=>{const agent=p.kind!=="shell"&&p.agent!=="shell";
+    return {paneId:p.paneId,agent:agent?p.agent:"shell",status:agent?p.status??"unknown":"terminal",...(p.label?{label:p.label}:{}),
+      workspaceId:p.workspaceId??"",workspace:p.workspaceLabel??"",folder:(p.cwd??"").split("/").filter(Boolean).pop()??"",...(p.lastMessageAt?{lastMessageAt:p.lastMessageAt}:{})};});
+  return {counts:{agents:agents.length,needsInput:count("blocked"),working:count("working"),finished:count("done"),idle:agents.length-count("blocked")-count("working")-count("done"),terminals:all.length-agents.length},attention,panes};
 }
 const EDITABLE=["hostName","listen","port","backend","herdr","session","discoverable","nearbyScope","localRoute","console","consolePort","updates","webLan","webListen","webPort","webScope"] as const;
 function editable(config:Config){return Object.fromEntries(EDITABLE.map(key=>[key,config[key]??null]));}
@@ -230,3 +268,5 @@ function merge(config:Config,value:Record<string,unknown>,directory:string):Conf
   if(next.webLan===true&&[next.port,next.consolePort??8790].includes(next.webPort??8791))fail(400,"The web remote needs its own port");
   return next as unknown as Config;
 }
+/** Browsers signed in to the web remote are devices named "Web browser…" (web.ts). */
+const isBrowserName=(name:string)=>name.startsWith("Web browser");

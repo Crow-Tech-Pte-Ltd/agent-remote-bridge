@@ -9,6 +9,8 @@ import xterm from "@xterm/xterm/lib/xterm.js" with {type:"text"};
 import xtermCss from "@xterm/xterm/css/xterm.css" with {type:"text"};
 import xtermLicense from "../../licenses/xterm.js-5.5.0-LICENSE.txt" with {type:"text"};
 import iconFile from "./icon.png" with {type:"file"};
+import agentLogos from "./agent-logos.json";
+import { HARNESSES } from "../backend/harnesses";
 import { readFileSync } from "node:fs";
 export const remotePage=page as unknown as string,remoteScript:string=script,remoteStyles:string=styles,xtermStyles:string=xtermCss;
 // The bridge console (loopback only, see console.ts) shares the remote's look.
@@ -19,3 +21,7 @@ export const appIcon:Uint8Array=new Uint8Array(readFileSync(iconFile));
 // The map file is not shipped; drop the reference so browsers don't ask for it.
 // Browsers receive a copy of xterm.js, so its MIT notice travels with it.
 export const xtermScript:string=`/*! xterm.js 5.5.0\n${String(xtermLicense).replaceAll("*/","* /").trim()}\n*/\n`+xterm.replace(/\n?\/\/# sourceMappingURL=\S+\s*$/,"\n");
+// Agent names and maker marks for the console and the web remote: kind -> {label, svg?}. The marks are the app's
+// (scripts/web-agent-logos.ts); they identify which tool runs in a pane and are trademarks of their owners.
+const logos:Record<string,string>=agentLogos;
+export const agentMarks:string=JSON.stringify(Object.fromEntries([...HARNESSES.map(h=>[h.kind,{label:h.label,...(logos[h.kind]?{svg:logos[h.kind]}:{})}]),["shell",{label:"Terminal"}]]));

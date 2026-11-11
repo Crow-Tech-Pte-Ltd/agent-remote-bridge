@@ -239,7 +239,7 @@ export function createBridge(options:BridgeOptions) {
   function socketOpen(ws:ServerWebSocket<SocketData>){ws.data.heard=Date.now();sockets.add(ws);if(logSockets)console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_open",device:ws.data.device.id.slice(0,8),open:ownSockets(ws.data.device.id)}));send(ws,{type:"connected",epoch});}
   function socketHeard(ws:ServerWebSocket<SocketData>){ws.data.heard=Date.now();}
   function socketMessage(ws:ServerWebSocket<SocketData>,message:string|Buffer){ws.data.heard=Date.now();websocketMessage(ws,message).catch(error=>{const f=failure(error);send(ws,{type:"error",...f.body.error});});}
-  function socketClose(ws:ServerWebSocket<SocketData>){sockets.delete(ws);if(logSockets)console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_close",device:ws.data.device.id.slice(0,8),pane:ws.data.pane??null,open:ownSockets(ws.data.device.id)}));clearStream(ws);}
+  function socketClose(ws:ServerWebSocket<SocketData>){sockets.delete(ws);try{state.touch(ws.data.device);}catch{}if(logSockets)console.error(JSON.stringify({t:new Date().toISOString().slice(11,23),event:"live_socket_close",device:ws.data.device.id.slice(0,8),pane:ws.data.pane??null,open:ownSockets(ws.data.device.id)}));clearStream(ws);}
   function admitSocket(device:Device){
     let open=ownSockets(device.id);
     // A device at its four sockets is let in by ending its own socket it has heard least from that holds no
