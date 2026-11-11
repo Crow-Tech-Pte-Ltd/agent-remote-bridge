@@ -36,6 +36,7 @@ const ICONS = {
   agent: [P("M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"), P("M18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z")],
   bell: [P("M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"), P("M10 20.5a2 2 0 0 0 4 0")],
   key: [C(8, 15.5, 4), P("M11 12.5L19.5 4"), P("M16.5 7l2.5 2.5"), P("M14.5 9l2 2")],
+  folder: [P("M3.5 7A1.5 1.5 0 0 1 5 5.5h4.2l2 2.2H19A1.5 1.5 0 0 1 20.5 9.2V17a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z"), P("M12 10.5v5M9.5 13h5")],
 };
 function icon(name, size = 18) {
   const svg = document.createElementNS(SVGNS, "svg");
@@ -372,6 +373,7 @@ const ACTIVITY = {
   certificate_renewed: ["shield", "good", () => "New certificate created", () => "Phones switch to it by themselves"],
   settings_saved: ["sliders", "", e => `Changed ${SETTING_LIST(e.detail)}`],
   address_changed: ["network", "", e => `Invitations now use ${e.detail}`],
+  folder_created: ["folder", "", e => `${e.name} created ${e.detail}`, () => "For a new terminal"],
 };
 let activityAll = false;
 function activityCard() {

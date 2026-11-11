@@ -1,10 +1,11 @@
 // What happened on this bridge recently, for the console's Recent activity. Kept in memory per state
 // directory (it outlives a console restart of the services, not the process). Pairings and revocations
 // come from state.sqlite instead (console.ts), so they survive restarts. Events carry device and
-// setting names only: never secrets, addresses typed by phones or terminal text.
+// setting names only: never secrets, addresses typed by phones or terminal text. folder_created carries
+// the folder a phone's new workspace, tab or split made (home shown as ~): the console is the owner's own.
 export type ActivityKind =
   | "started" | "updated" | "restarted" | "connected" | "renamed" | "signed_in"
-  | "relay_connected" | "relay_lost" | "certificate_renewed" | "settings_saved" | "address_changed";
+  | "relay_connected" | "relay_lost" | "certificate_renewed" | "settings_saved" | "address_changed" | "folder_created";
 export interface ActivityEvent {at:number;kind:ActivityKind;device?:string;name?:string;detail?:string}
 const LIMIT=200,logs=new Map<string,ActivityEvent[]>();
 export function record(directory:string,event:Omit<ActivityEvent,"at">&{at?:number}) {

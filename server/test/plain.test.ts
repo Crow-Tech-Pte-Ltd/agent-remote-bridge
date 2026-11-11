@@ -1,5 +1,6 @@
 import {test,expect,afterEach} from 'bun:test';
-import {mkdtemp,mkdir,writeFile,chmod,rm,readFile,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,chmod,rm,readFile,realpath,stat} from 'node:fs/promises';
+import {existsSync} from 'node:fs';
 import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createPlainBackend} from '../src/backend/plain';
 import type {HostBackend,TerminalFrame} from '../src/backend/types';
@@ -67,7 +68,6 @@ test('a running harness is recognised as an agent and changes the terminal ident
 test('workspaces, tabs, splits and closing follow the terminals that exist',async()=>{
   const f=await fixture();const b=f.make();const project=join(f.root,'project');await mkdir(project);
   await expect(b.mutate('workspace.create',undefined,{cwd:'relative'})).rejects.toMatchObject({status:400});
-  await expect(b.mutate('workspace.create',undefined,{cwd:join(f.root,'missing')})).rejects.toMatchObject({status:400});
   const created:any=await b.mutate('workspace.create',undefined,{cwd:project,label:'Project'});
   await b.mutate('tab.create',undefined,{workspaceId:created.workspace.workspaceId});
   let s:any=await b.snapshot();const mine=s.shellPanes.filter((p:any)=>p.workspaceId===created.workspace.workspaceId);
@@ -77,6 +77,37 @@ test('workspaces, tabs, splits and closing follow the terminals that exist',asyn
   for(const p of s.shellPanes.filter((p:any)=>p.workspaceId===created.workspace.workspaceId))await b.mutate('pane.close',undefined,{paneId:p.paneId,identityToken:p.identityToken});
   s=await b.snapshot();expect(s.workspaces.map((w:any)=>w.label)).toEqual(['home']);
   expect(JSON.parse(await readFile(join(f.state,'plain-workspaces.json'),'utf8')).folders).toHaveLength(1);
+});
+
+// openspec/changes/create-missing-folders
+test('a new workspace, tab or split in a missing folder creates it, but only once the request is otherwise fine',async()=>{
+  const f=await fixture();const b=f.make();const fresh=join(f.root,'projects','new-idea');
+  const made:any=await b.mutate('workspace.create',undefined,{cwd:fresh,label:'New idea'});
+  expect(made.folderCreated).toBe(fresh);expect((await stat(fresh)).isDirectory()).toBe(true);
+  let s:any=await b.snapshot();expect(s.capabilities.createsFolders).toBe(true);
+  const pane=s.shellPanes.find((p:any)=>p.workspaceId===made.workspace.workspaceId);expect(pane.cwd).toBe(fresh);
+  expect(((await b.mutate('workspace.create',undefined,{cwd:fresh})) as any).folderCreated).toBeUndefined();
+  const tabDir=join(fresh,'docs');expect(((await b.mutate('tab.create',undefined,{workspaceId:made.workspace.workspaceId,cwd:tabDir})) as any).folderCreated).toBe(tabDir);
+  const splitDir=join(f.root,'split here');
+  expect(((await b.mutate('pane.split',undefined,{paneId:pane.paneId,identityToken:pane.identityToken,direction:'down',cwd:splitDir})) as any).folderCreated).toBe(splitDir);
+  expect((await stat(splitDir)).isDirectory()).toBe(true);
+  // Refused for another reason: nothing is created.
+  await expect(b.mutate('tab.create',undefined,{workspaceId:'w99',cwd:join(f.root,'refused-1')})).rejects.toMatchObject({status:404});
+  await expect(b.mutate('pane.split',undefined,{paneId:pane.paneId,identityToken:'stale',direction:'right',cwd:join(f.root,'refused-2')})).rejects.toMatchObject({status:409});
+  await expect(b.mutate('pane.split',undefined,{paneId:pane.paneId,identityToken:pane.identityToken,direction:'up',cwd:join(f.root,'refused-3')})).rejects.toMatchObject({status:400});
+  await expect(b.mutate('workspace.create',undefined,{cwd:join(f.root,'refused-4'),label:'x'.repeat(101)})).rejects.toMatchObject({status:400});
+  for(const n of [1,2,3,4])expect(existsSync(join(f.root,`refused-${n}`))).toBe(false);
+  // A file is not a folder, nor is anything below one.
+  await writeFile(join(f.root,'notes.txt'),'x');
+  await expect(b.mutate('workspace.create',undefined,{cwd:join(f.root,'notes.txt')})).rejects.toMatchObject({code:'invalid_cwd',message:'That path is a file, not a folder'});
+  await expect(b.mutate('workspace.create',undefined,{cwd:join(f.root,'notes.txt','below')})).rejects.toMatchObject({code:'invalid_cwd'});
+  // No permission: refused, and no terminal opens.
+  if(process.getuid?.()!==0){
+    const locked=join(f.root,'locked');await mkdir(locked);await chmod(locked,0o500);cleanup.push(()=>chmod(locked,0o700));
+    const before=((await b.snapshot()) as any).shellPanes.length;
+    await expect(b.mutate('workspace.create',undefined,{cwd:join(locked,'inner')})).rejects.toMatchObject({code:'folder_not_created',message:"The computer couldn't create that folder: permission denied"});
+    expect(((await b.snapshot()) as any).shellPanes.length).toBe(before);
+  }
 });
 
 test('a restarted bridge reopens the saved folders, and exited shells disappear',async()=>{
