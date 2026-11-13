@@ -7,6 +7,10 @@ transcripts, and (with an explicit control lease) type into terminals. The phone
 talks directly to your computer over TLS with a pinned certificate; there is no
 hosted service.
 
+The user docs are at [crow.sg/apps/ai-agent-remote/docs](https://crow.sg/apps/ai-agent-remote/docs/):
+quickstart, install, pairing, the web console, reaching the bridge from anywhere, security,
+the CLI reference and troubleshooting.
+
 ## Install
 
 ```sh
