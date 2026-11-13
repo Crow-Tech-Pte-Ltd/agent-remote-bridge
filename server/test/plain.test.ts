@@ -39,6 +39,17 @@ test('a controller types into the shell, observers only watch, and history reads
   await control.handle.command({type:'terminal.input',text:"printf 'PLAIN_%s\\n' OK\r"});
   await until(()=>decode(watcher.frames).includes('PLAIN_OK'));
   expect(watcher.frames.slice(1).every((x,i)=>x.seq===watcher.frames[i]!.seq+1)).toBe(true);
+  // The watcher joining (its own full frame) must not open a gap in the controller's numbering, or the bridge
+  // would make the controller resynchronise whenever another viewer joins.
+  await until(()=>decode(control.frames).includes('PLAIN_OK'));
+  expect(control.frames.slice(1).every((x,i)=>x.full||x.seq===control.frames[i]!.seq+1)).toBe(true);
+  // A refresh gives only that stream a full frame of the current screen, numbered in its own sequence.
+  const before=watcher.frames.length,controlBefore=control.frames.length;
+  await watcher.handle.refresh!();
+  expect(watcher.frames.slice(before)).toHaveLength(1);
+  expect(watcher.frames.at(-1)).toMatchObject({full:true,seq:watcher.frames[before-1]!.seq+1});
+  expect(Buffer.from(watcher.frames.at(-1)!.bytes,'base64').toString()).toContain('PLAIN_OK');
+  expect(control.frames).toHaveLength(controlBefore);
   await expect(watcher.handle.command({type:'terminal.input',text:'x'})).rejects.toMatchObject({status:403});
   await expect(open(b,pane.paneId)).rejects.toMatchObject({status:409});
   const out:any=await b.output(undefined,pane.paneId,50);expect(out.text).toContain('PLAIN_OK');

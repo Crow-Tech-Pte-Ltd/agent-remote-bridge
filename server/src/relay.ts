@@ -64,7 +64,8 @@ interface Stream {id:string;credential:string;phone:ServerWebSocket<Peer>;host?:
 export interface RelayOptions {hostToken:string;phoneToken:string;hostname?:string;port?:number;maximumConnections?:number;sharedPhoneToken?:boolean;statsMilliseconds?:number;}
 export function createRelay(options:RelayOptions) {
   if(!TOKEN.test(options.hostToken)||!TOKEN.test(options.phoneToken)||options.hostToken===options.phoneToken)throw new Error("Invalid relay configuration");
-  const maximum=options.maximumConnections??32;if(!Number.isInteger(maximum)||maximum<1||maximum>256)throw new Error("Invalid connection bound");
+  // Streams for the whole bridge: each device holds up to four live sockets plus its HTTP connections.
+  const maximum=options.maximumConnections??64;if(!Number.isInteger(maximum)||maximum<1||maximum>256)throw new Error("Invalid connection bound");
   const streams=new Map<string,Stream>(),attempts=new Map<string,{at:number;count:number}>(),shared=options.sharedPhoneToken!==false;
   let control:ServerWebSocket<Peer>|undefined,closing=false,allowed=new Set<string>(),admitted=0,rejectedCount=0;
   // Counts only, never addresses or tokens: the bridge shows them so the owner can spot a leaked credential.
@@ -78,8 +79,9 @@ export function createRelay(options:RelayOptions) {
     stream.phone.close(1001,"Tunnel closed");stream.host?.close(1001,"Tunnel closed");
   }
   function send(ws:ServerWebSocket<Peer>,data:Uint8Array) {
-    // Never let terminal traffic turn the relay into an unbounded buffer.
-    for(let offset=0;offset<data.length;offset+=CHUNK)if(ws.getBufferedAmount()>MAX_BUFFER||ws.send(data.subarray(offset,offset+CHUNK))===-1)return false;
+    // Never let terminal traffic turn the relay into an unbounded buffer. Bun's send returns -1 when the chunk was
+    // queued behind backpressure (still delivered, bounded by MAX_BUFFER here) and 0 when it was dropped.
+    for(let offset=0;offset<data.length;offset+=CHUNK)if(ws.getBufferedAmount()>MAX_BUFFER||ws.send(data.subarray(offset,offset+CHUNK))===0)return false;
     return true;
   }
   function reply(status:number) {return new Response(status===200?"ok\n":"Unavailable\n",{status,headers:{"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});}
@@ -180,8 +182,11 @@ export interface RelayStatus {connected:boolean;revision:number;sharedPhoneToken
  * `credentials` returns the per-device credential digests the relay may admit; it is re-read every
  * couple of seconds so pairing and revocation from another CLI process reach the relay promptly.
  */
-export function connectRelay(options:{profile:RelayProfile;target:{host:string;port:number};log?:(event:Record<string,unknown>)=>void;proxy?:string;credentials?:()=>string[];onHello?:(revision:number)=>void}) {
-  const {url,token}=options.profile.host,log=options.log??(()=>{});
+/** Control connection timings (ms). A computer that changes networks without sleeping leaves its connection dead
+ *  with no close; every relay answers `ping`, so a missing pong past `dead` means the path is gone. */
+const RELAY_TIMING={dial:15_000,ping:10_000,dead:25_000};
+export function connectRelay(options:{profile:RelayProfile;target:{host:string;port:number};log?:(event:Record<string,unknown>)=>void;proxy?:string;credentials?:()=>string[];onHello?:(revision:number)=>void;timing?:Partial<typeof RELAY_TIMING>}) {
+  const {url,token}=options.profile.host,log=options.log??(()=>{}),timing={...RELAY_TIMING,...options.timing};
   const proxy=options.proxy??process.env.HTTPS_PROXY??process.env.https_proxy;
   const base={headers:{"X-AI-Remote-Host-Token":token},...(proxy?{proxy}:{})};
   let closed=false,socket:WebSocket|undefined,retry:ReturnType<typeof setTimeout>|undefined,heartbeat:ReturnType<typeof setInterval>|undefined,delay=1000;
@@ -201,7 +206,7 @@ export function connectRelay(options:{profile:RelayProfile;target:{host:string;p
     let paused:ReturnType<typeof setInterval>|undefined;
     const finish=()=>{if(!live.delete(entry))return;clearInterval(paused);entry.local?.destroy();try{ws.close();}catch{}};
     ws.addEventListener("open",()=>{
-      const local=createConnection({host:options.target.host,port:options.target.port});entry.local=local;
+      const local=createConnection({host:options.target.host,port:options.target.port});entry.local=local;local.setNoDelay(true);
       local.on("data",(data:Buffer)=>{
         for(let offset=0;offset<data.length;offset+=CHUNK)ws.send(data.subarray(offset,offset+CHUNK));
         // Hold the bridge's output while the relay drains, rather than buffering without bound.
@@ -220,9 +225,11 @@ export function connectRelay(options:{profile:RelayProfile;target:{host:string;p
     if(closed)return;
     const ws=new WebSocket(url,{...base,protocols:[HOST_PROTOCOL]});socket=ws;
     let seen=Date.now(),opened=false;
-    ws.addEventListener("open",()=>{opened=true;delay=1000;seen=Date.now();status.connected=true;status.since=new Date().toISOString();status.lastError=undefined;log({event:"relay_connected",url:new URL(url).host});
+    // A dial that hangs (a network that went away mid-handshake) is given up, so the retry uses the network there is now.
+    const dial=setTimeout(()=>{if(!opened)try{ws.close();}catch{}},timing.dial);dial.unref?.();
+    ws.addEventListener("open",()=>{clearTimeout(dial);opened=true;delay=1000;seen=Date.now();status.connected=true;status.since=new Date().toISOString();status.lastError=undefined;log({event:"relay_connected",url:new URL(url).host});
       // Proxies such as Cloudflare drop quiet WebSockets; a missing pong means the path is dead.
-      heartbeat=setInterval(()=>{if(Date.now()-seen>90_000){ws.close();return;}try{ws.send('{"type":"ping"}');}catch{}},30_000);
+      heartbeat=setInterval(()=>{if(Date.now()-seen>timing.dead){ws.close();return;}try{ws.send('{"type":"ping"}');}catch{}},timing.ping);
     });
     ws.addEventListener("message",event=>{
       seen=Date.now();if(typeof event.data!=="string")return;
@@ -239,7 +246,7 @@ export function connectRelay(options:{profile:RelayProfile;target:{host:string;p
       }catch{}
     });
     ws.addEventListener("close",event=>{
-      clearInterval(heartbeat);clearInterval(credentialTimer);sentCredentials="";if(socket===ws){socket=undefined;status.connected=false;}if(closed)return;
+      clearTimeout(dial);clearInterval(heartbeat);clearInterval(credentialTimer);sentCredentials="";if(socket===ws){socket=undefined;status.connected=false;}if(closed)return;
       // Another process holding this bridge's relay token took over: a leaked token or a second copy of this bridge.
       if(event.code===4000){status.replaced++;log({event:"relay_replaced",warning:"Another connection using this bridge's relay credential replaced this one. If you are not running a second copy, rotate the relay secrets."});}
       if(!opened)status.lastError="could not connect";

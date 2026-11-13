@@ -10,6 +10,7 @@ const meta={type:'session_meta',payload:{id:'session-123'}};
 const message=(text:string)=>({type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text}]}});
 test('Codex allows published messages and tool activity, excludes hidden reasoning and system prompts',()=>{expect(normalizeTranscriptRecord('codex',{type:'response_item',payload:{type:'reasoning',summary:[{text:'SECRET'}]}},'1')).toEqual([]);expect(normalizeTranscriptRecord('codex',{type:'response_item',payload:{type:'message',role:'system',content:[{type:'input_text',text:'SECRET'}]}},'1')).toEqual([]);expect(normalizeTranscriptRecord('codex',message('Hi'),'1')[0]?.text).toBe('Hi');expect(normalizeTranscriptRecord('codex',{type:'response_item',payload:{type:'function_call',name:'shell',arguments:'{"cmd":"ls"}',call_id:'a'}},'1')[0]?.kind).toBe('tool_call');});
 test('Claude ignores thinking and retains visible tool messages',()=>{const rows=normalizeTranscriptRecord('claude',{type:'assistant',message:{content:[{type:'thinking',thinking:'SECRET'},{type:'text',text:'Visible'},{type:'tool_use',id:'call1',name:'Read',input:{file_path:'a'}}]}},'1');expect(rows.length).toBe(2);expect(JSON.stringify(rows)).not.toContain('SECRET');expect(rows[1]?.toolName).toBe('Read');});
+test('a poll that finds nothing new returns the cursor it was given',async()=>{const f=await setup();await writeFile(f.path,line(meta)+line(message('one')));const a:any=await readTranscript(f.home,ref,'identity');const b:any=await readTranscript(f.home,ref,'identity',a.cursor);expect(b.messages).toEqual([]);expect(b.reset).toBe(false);expect(b.cursor).toBe(a.cursor);await appendFile(f.path,line(message('two')));const c:any=await readTranscript(f.home,ref,'identity',b.cursor);expect(c.messages.map((m:any)=>m.text)).toEqual(['two']);expect(c.cursor).not.toBe(b.cursor);});
 test('partial last JSON line waits; cursor resumes without replay',async()=>{const f=await setup();await writeFile(f.path,line(meta)+line(message('one'))+'{"type":"response_item"');const a:any=await readTranscript(f.home,ref,'identity');expect(a.supported).toBe(true);expect(a.messages.map((m:any)=>m.text)).toEqual(['one']);expect(a.truncated).toBe(false);expect(a.pending).toBe(true);await appendFile(f.path,',"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"two"}]}}\n');const b:any=await readTranscript(f.home,ref,'identity',a.cursor);expect(b.messages.map((m:any)=>m.text)).toEqual(['two']);expect(b.reset).toBe(false);});
 test('rotation, rewrite, identity mismatch and malformed cursor reset',async()=>{const f=await setup();await writeFile(f.path,line(meta)+line(message('one')));const a:any=await readTranscript(f.home,ref,'identity');await rename(f.path,f.path+'.old');await writeFile(f.path,line(meta)+line(message('two')));const b:any=await readTranscript(f.home,ref,'identity',a.cursor);expect(b.reset).toBe(true);expect(b.messages[0].text).toBe('two');const c:any=await readTranscript(f.home,ref,'other',b.cursor);expect(c.reset).toBe(true);const d:any=await readTranscript(f.home,ref,'other','bad');expect(d.reset).toBe(true);await writeFile(f.path,line(meta)+line(message('NEW')));const e:any=await readTranscript(f.home,ref,'other',d.cursor);expect(e.reset).toBe(true);});
 test('requires exact unique native binding and matching metadata',async()=>{const f=await setup();await writeFile(f.path,line({type:'session_meta',payload:{id:'wrong'}})+line(message('SECRET')));expect((await readTranscript(f.home,ref,'id')).supported).toBe(false);await writeFile(f.path,line(meta));await writeFile(join(f.path,'../duplicate-session-123.jsonl'),line(meta));expect((await readTranscript(f.home,ref,'id')).supported).toBe(false);expect((await readTranscript(f.home,undefined,'id')).supported).toBe(false);expect((await readTranscript(f.home,{...ref,value:'../escape'},'id')).supported).toBe(false);});
@@ -74,4 +75,29 @@ test('last message time skips trailing tool activity, follows new messages and n
   expect(await lastMessageAt(f.home,{...ref,value:'../escape'})).toBeUndefined();expect(await lastMessageAt(f.home,undefined)).toBeUndefined();
   expect(await lastMessageAt(f.home,{...ref,source:'herdr:claude'})).toBeUndefined();
   const other=join(f.home,'outside.jsonl');await writeFile(other,line(at('2026-11-07T10:00:00Z',message('x'))));expect(await lastMessageAt(f.home,{...ref,kind:'path',value:other})).toBeUndefined();
+});
+test('last message time reads only what a growing log appended, including a line finished later',async()=>{
+  const f=await setup();const at=(t:string,v:any)=>({...v,timestamp:t});
+  const tool=(t:string)=>at(t,{type:'response_item',payload:{type:'function_call_output',call_id:'c',output:'y'.repeat(5000)}});
+  await writeFile(f.path,line(meta)+line(at('2026-11-07T09:01:00Z',message('done'))));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:01:00Z'));
+  // Half a line, as an agent writes it: nothing new yet; the rest of it arrives on the next read.
+  const next=line(at('2026-11-07T09:05:00Z',message('half written')));
+  await appendFile(f.path,line(tool('2026-11-07T09:02:00Z'))+next.slice(0,40));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:01:00Z'));
+  await appendFile(f.path,next.slice(40));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:05:00Z'));
+  // Only tool output appended (more than the 1 MB a read looks at): the last message stays.
+  let tools='';for(let i=0;i<260;i++)tools+=line(tool('2026-11-07T09:06:00Z'));
+  await appendFile(f.path,tools);
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:05:00Z'));
+  await appendFile(f.path,line(at('2026-11-07T09:40:00Z',message('later'))));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T09:40:00Z'));
+  // A log replaced by a larger new file is read again from its end, not from where the old one was read to.
+  await rename(f.path,f.path+'.old');
+  await writeFile(f.path,line(meta)+line(tool('2026-11-07T07:00:00Z')).repeat(200)+line(at('2026-11-07T08:00:00Z',message('replaced')))+line(tool('2026-11-07T08:01:00Z')).repeat(120));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T08:00:00Z'));
+  // A last line that never gets its newline still counts, as before.
+  await appendFile(f.path,JSON.stringify(at('2026-11-07T08:30:00Z',message('no newline'))));
+  expect(await lastMessageAt(f.home,ref)).toBe(Date.parse('2026-11-07T08:30:00Z'));
 });

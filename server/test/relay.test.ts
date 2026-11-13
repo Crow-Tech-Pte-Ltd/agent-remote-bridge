@@ -92,3 +92,15 @@ test("profiles, relay secrets and joining stay private and well-formed",async()=
  expect(statSync(join(state,"relay.json")).mode&0o777).toBe(0o600);
  await main(["relay","leave","--state",state]);
 });
+test("the bridge gives up a dial that hangs and a relay path that stopped answering, then reconnects",async()=>{
+ // A relay address that accepts TCP but never answers the upgrade (a network that went away mid-handshake).
+ let dials=0;const silent=createServer(()=>{dials++;});silent.listen(0,"127.0.0.1");await new Promise<void>(r=>silent.once("listening",r));cleanup.push(()=>{silent.close();});
+ const address=silent.address();if(!address||typeof address==="string")throw new Error("No listener");
+ const hung=connectRelay({profile:profile(`127.0.0.1:${address.port}`),target:await echoTarget(),timing:{dial:200}});cleanup.push(()=>hung.close());
+ for(let i=0;i<300&&dials<2;i++)await Bun.sleep(10);expect(dials).toBe(2);
+ // A relay that takes the control connection but never answers its pings.
+ let opened=0;const quiet=Bun.serve({port:0,hostname:"127.0.0.1",fetch(request,server){return server.upgrade(request,{headers:{"Sec-WebSocket-Protocol":HOST_PROTOCOL}})?undefined:new Response("no",{status:400});},websocket:{sendPings:false,open(){opened++;},message(){}}});
+ cleanup.push(()=>quiet.stop(true));
+ const dead=connectRelay({profile:profile(`127.0.0.1:${quiet.port}`),target:await echoTarget(),timing:{ping:50,dead:150}});cleanup.push(()=>dead.close());
+ for(let i=0;i<300&&opened<2;i++)await Bun.sleep(10);expect(opened).toBe(2);
+});

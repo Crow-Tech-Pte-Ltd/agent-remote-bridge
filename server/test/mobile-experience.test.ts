@@ -11,8 +11,8 @@ afterEach(()=>{for(const f of cleanup.splice(0).reverse())f();});
 function directory(){const d=mkdtempSync(join(tmpdir(),"herdr-mobile-"));cleanup.push(()=>rmSync(d,{recursive:true,force:true}));return d;}
 /** A pane whose computer-side grid is 132x41; the phone must not crop or reflow it by default. */
 class SizedBackend implements HostBackend {
-  identityToken="identity-1";size={cols:132,rows:41};status="idle";opened:{control:boolean,cols:number,rows:number}[]=[];commands:any[]=[];
-  async snapshot(){return {agents:[],shellPanes:[{paneId:"p",status:this.status,revision:Math.random()}],workspaces:[],tabs:[],sessions:[],capabilities:{terminal:true},ts:Date.now()};}
+  identityToken="identity-1";size={cols:132,rows:41};status="idle";tools:string[]=[];opened:{control:boolean,cols:number,rows:number}[]=[];commands:any[]=[];
+  async snapshot(){return {agents:[],shellPanes:[{paneId:"p",status:this.status,revision:Math.random(),process:{shellPid:1,foregroundProcessGroupId:1,foregroundProcesses:this.tools.map((name,i)=>({pid:100+i,name,cwd:"/"}))}}],workspaces:[],tabs:[],sessions:[],capabilities:{terminal:true},ts:Date.now()};}
   async identity(_s:string|undefined,paneId:string){return {paneId,identityToken:this.identityToken,revision:1};}
   async paneSize(){return {...this.size};}
   sessionName(session?:string){return session??"main";}
@@ -160,13 +160,16 @@ test("scrolling sends one desktop-sized notch per command so mouse-driven apps m
 
 test("snapshot_changed is sent when state changes, not on every tick",async()=>{
   const f=fixture(),d=f.device(),{messages}=await socket(f.base,d.token);
+  await Bun.sleep(1300);
+  // An agent running a tool changes its foreground processes, which no app shows.
+  f.backend.tools=["rg"];
   await Bun.sleep(2600);
   expect(messages.filter(m=>m.type==="snapshot_changed")).toHaveLength(0);
   f.backend.status="working";
   await eventually(()=>messages.some(m=>m.type==="snapshot_changed"),3000);
   const snapshot=await (await f.request("/v1/snapshot",d.token)).json() as any;
   expect(snapshot.capabilities).toMatchObject({liveInput:true,hostSizedTerminal:true});
-});
+},12_000);
 
 test("nearby pairing requires the code shown on the computer and limits guesses",async()=>{
   const off=fixture(false);

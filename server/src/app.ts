@@ -14,6 +14,10 @@ import type { GatewayConnection } from "./connection";
 import type { BridgeRelease } from "./updates";
 
 const MAX_BODY=65_536, MAX_RESPONSE=2_097_152, MAX_FILE_RESPONSE=8_388_608;
+/** Live frames are sent compressed only on a runtime known to end each compressed message with a sync flush. Bun
+ *  1.3.x ends it with a final deflate block, which OkHttp (Android) cannot read: its socket stalls with no error.
+ *  Checked with OkHttp 4.12.0 against Bun 1.3.14 (stalls) and 1.4.4 (reads every frame); older runtimes send plain. */
+export const COMPRESSES_FRAMES=Bun.semver.satisfies(Bun.version,">=1.4.4");
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function str(value:unknown,max=256,min=1):string {if(typeof value!=="string" || value.length<min || value.length>max || value.includes("\0"))throw new BridgeError("invalid_request","Invalid string");return value;}
 function integer(value:unknown,min:number,max:number):number {if(typeof value!=="number" || !Number.isInteger(value) || value<min || value>max)throw new BridgeError("invalid_request","Invalid integer");return value;}
@@ -55,6 +59,8 @@ class Limiter {
   }
 }
 export interface SocketData {device:Device;session?:string;generation:number;observer?:TerminalHandle;pane?:string;identity?:string;lease?:string;controllerFrames?:boolean;seq?:number;fitHost?:boolean;skippingSince?:number;size?:{cols:number;rows:number};acks?:boolean;sent?:number;acked?:number;
+  /** While skipping ahead: a full frame was already asked of the stream's helper (`TerminalHandle.refresh`). */
+  refreshAsked?:boolean;
   /** When the phone last sent anything on this socket, a message or a ping or pong. */
   heard?:number;}
 export interface BridgeOptions {
@@ -95,7 +101,10 @@ export function createBridge(options:BridgeOptions) {
   const send=(ws:ServerWebSocket<SocketData>,value:unknown)=>{
     if(!state.active(ws.data.device.id)){ws.close(4001,"Device revoked");return 0;}
     const text=JSON.stringify(value);
-    if(text.length>MAX_RESPONSE || ws.getBufferedAmount()>4_194_304 || ws.send(text)===-1) {ws.close(4008,"Resynchronization required");return 0;}
+    // Bun's send: -1 means queued behind backpressure (frame() then skips ahead until the buffer drains), 0 means
+    // dropped (past `backpressureLimit`, where Bun ends the socket). Text over 1 KB is compressed for clients that
+    // negotiated per-message deflate (OkHttp, browsers); for the others the flag is ignored.
+    if(text.length>MAX_RESPONSE || ws.getBufferedAmount()>4_194_304 || ws.send(text,COMPRESSES_FRAMES && text.length>=1024)===0) {ws.close(4008,"Resynchronization required");return 0;}
     return text.length;
   };
   // A relay (or proxy) in the path takes the bridge's bytes at once and holds them for a slow phone, so the
@@ -114,7 +123,7 @@ export function createBridge(options:BridgeOptions) {
   }
   function clearStream(ws:ServerWebSocket<SocketData>) {
     checkParked(ws.data.device.id,ws.data.session,ws.data.pane);
-    ws.data.generation++;ws.data.observer?.close();ws.data.observer=undefined;ws.data.lease=undefined;ws.data.controllerFrames=false;ws.data.pane=undefined;ws.data.identity=undefined;ws.data.seq=undefined;ws.data.skippingSince=undefined;
+    ws.data.generation++;ws.data.observer?.close();ws.data.observer=undefined;ws.data.lease=undefined;ws.data.controllerFrames=false;ws.data.pane=undefined;ws.data.identity=undefined;ws.data.seq=undefined;ws.data.skippingSince=undefined;ws.data.refreshAsked=false;
   }
   function frame(ws:ServerWebSocket<SocketData>,value:TerminalFrame) {
     if(value.identityToken!==ws.data.identity || value.paneId!==ws.data.pane){clearStream(ws);send(ws,{type:"stream_closed",reason:"identity_changed"});return;}
@@ -122,17 +131,32 @@ export function createBridge(options:BridgeOptions) {
     ws.data.seq=value.seq;
     // A slow phone link must not end the stream: skip ahead to the next full frame instead.
     if(ws.data.skippingSince!==undefined || behind(ws)) {
-      if(value.full && drained(ws)){ws.data.skippingSince=undefined;sendFrame(ws,value);return;}
+      if(value.full && drained(ws)){ws.data.skippingSince=undefined;ws.data.refreshAsked=false;sendFrame(ws,value);return;}
       ws.data.skippingSince??=Date.now();
+      if(drained(ws) && refresh(ws))return;
       if(Date.now()-ws.data.skippingSince>3000 && drained(ws)){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
       return;
     }
     sendFrame(ws,value);
   }
+  /** Once a skipped stream's link has drained, a helper that can redraw on request (plain terminals) sends a full frame
+   *  and the stream resumes at once. Asked once per skip; without an answer the 3 s resync still applies. */
+  function refresh(ws:ServerWebSocket<SocketData>):boolean {
+    if(ws.data.refreshAsked)return false;
+    const handle=ws.data.controllerFrames?controls.leases.get(ws.data.lease??"")?.handle:ws.data.observer;
+    if(!handle?.refresh)return false;
+    ws.data.refreshAsked=true;
+    void Promise.resolve().then(()=>handle.refresh!()).catch(()=>{});
+    return true;
+  }
   function attach(ws:ServerWebSocket<SocketData>,lease:Lease):boolean {
     ws.data.lease=lease.leaseId;
-    if(!lease.replayable || !lease.frames[0]?.full){ws.data.controllerFrames=false;return false;}
-    ws.data.generation++;ws.data.observer?.close();ws.data.observer=undefined;ws.data.controllerFrames=true;ws.data.seq=undefined;
+    // A long cache (a controller sends few full frames) is not replayed: past the ack window or a full socket buffer
+    // the rest of it would be skipped, and with no full frame to resume at, the phone would resync every 3 s. A fresh
+    // read-only helper starts with a full frame instead, as after a cache overflow; input still goes through the lease.
+    const long=lease.frames.length>1 && lease.bytes+lease.frames.length*160>ACK_WINDOW/2;
+    if(!lease.replayable || !lease.frames[0]?.full || long){ws.data.controllerFrames=false;return false;}
+    ws.data.generation++;ws.data.observer?.close();ws.data.observer=undefined;ws.data.controllerFrames=true;ws.data.seq=undefined;ws.data.refreshAsked=false;
     for(const value of lease.frames)frame(ws,value);
     return true;
   }
@@ -177,9 +201,10 @@ export function createBridge(options:BridgeOptions) {
       let cols=value.cols===undefined && value.fit==="host"?80:integer(value.cols,20,400),rows=value.rows===undefined && value.fit==="host"?24:integer(value.rows,5,200);
       clearStream(ws);const generation=ws.data.generation;
       ws.data.acks=value.acks===true;ws.data.sent=0;ws.data.acked=0;
-      await controls.identity(ws.data.session,pane,identity);
-      // Host fit observes the computer's exact grid, so the phone can scale it rather than crop it.
-      if(fitHost){const size=await deadline(backend.paneSize!(ws.data.session,pane),3000).catch(()=>undefined);if(size){cols=size.cols;rows=size.rows;}}
+      // Host fit observes the computer's exact grid, so the phone can scale it rather than crop it. The grid and the
+      // identity check are independent reads, so they run together; a changed identity still refuses the observe.
+      const [,size]=await Promise.all([controls.identity(ws.data.session,pane,identity),fitHost?deadline(backend.paneSize!(ws.data.session,pane),3000).catch(()=>undefined):undefined]);
+      if(size){cols=size.cols;rows=size.rows;}
       if(ws.data.generation!==generation || !sockets.has(ws) || !state.active(ws.data.device.id))return;
       ws.data.pane=pane;ws.data.identity=identity;ws.data.fitHost=fitHost;ws.data.size={cols,rows};
       const lease=value.leaseId?controls.get(str(value.leaseId),ws.data.device.id):controls.matching(ws.data.device.id,ws.data.session,pane);
@@ -187,7 +212,9 @@ export function createBridge(options:BridgeOptions) {
       const pending=backend.terminal({session:ws.data.session,paneId:pane,expectedIdentityToken:identity,control:false,takeover:false,cols,rows,
         onFrame:value=>{if(ws.data.generation===generation)frame(ws,value);},
         onClose:reason=>{if(ws.data.generation===generation){clearStream(ws);send(ws,{type:"stream_closed",reason});}}});
-      pending.then(handle=>{if(ws.data.generation!==generation || !sockets.has(ws))handle.close();},()=>{});
+      // A helper that starts after the deadline below is still this stream's (its frames reach the phone): keep it as
+      // the observer so the stream's end closes it, rather than leaving the process running untracked.
+      pending.then(handle=>{if(ws.data.generation!==generation || !sockets.has(ws))handle.close();else ws.data.observer=handle;},()=>{});
       const handle=await deadline(pending);
       if(ws.data.generation!==generation || !sockets.has(ws))handle.close();else ws.data.observer=handle;
       return;
@@ -444,7 +471,7 @@ export function createBridge(options:BridgeOptions) {
       const list=[...targets.values()];
       for(let index=0;index<list.length && !stopped;index+=8)await Promise.all(list.slice(index,index+8).map(async target=>{
         let token:string|undefined;
-        try{token=(await deadline(backend.identity(target.session,target.pane),3000)).identityToken;}catch{}
+        try{token=(await deadline(backend.identity(target.session,target.pane,{shared:true}),3000)).identityToken;}catch{}
         if(stopped)return;
         for(const lease of controls.leases.values())if(lease.session===target.session && lease.paneId===target.pane && lease.identityToken!==token)controls.release(lease,token?"identity_changed":"host_unavailable");
         for(const ws of sockets)if(ws.data.session===target.session && ws.data.pane===target.pane && ws.data.identity!==token){clearStream(ws);send(ws,{type:"stream_closed",reason:token?"identity_changed":"host_unavailable"});}
@@ -454,14 +481,16 @@ export function createBridge(options:BridgeOptions) {
   const identitySweep=setInterval(()=>{void revalidateStreams();},2000);identitySweep.unref();
   // A change found by the watcher below makes every phone in that session fetch the snapshot at once:
   // they share the watcher's read (or one fresh read) instead of each walking every pane again.
-  const recentSnapshots=new Map<string,{at:number;value:Promise<Record<string,unknown>>}>();
+  // A read is shared while it is in flight (a stuck one for at most 10 s) and for 1 s after it returns, so phones that
+  // fetch after a `snapshot_changed` (sent once the watcher's read returned) get that read even over a slow relay.
+  const recentSnapshots=new Map<string,{at:number;settled?:number;value:Promise<Record<string,unknown>>}>();
   function snapshotOf(session:string|undefined):Promise<Record<string,unknown>> {
     const key=session??"",hit=recentSnapshots.get(key),now=Date.now();
-    if(hit && now-hit.at<1000)return hit.value;
-    const value=backend.snapshot(session) as Promise<Record<string,unknown>>;
-    recentSnapshots.set(key,{at:now,value});
-    value.catch(()=>{if(recentSnapshots.get(key)?.value===value)recentSnapshots.delete(key);});
-    if(recentSnapshots.size>64)for(const [k,v]of recentSnapshots)if(now-v.at>=1000)recentSnapshots.delete(k);
+    if(hit && (hit.settled===undefined?now-hit.at<10_000:now-hit.settled<1000))return hit.value;
+    const value=backend.snapshot(session) as Promise<Record<string,unknown>>,entry:{at:number;settled?:number;value:typeof value}={at:now,value};
+    recentSnapshots.set(key,entry);
+    value.then(()=>{entry.settled=Date.now();},()=>{if(recentSnapshots.get(key)===entry)recentSnapshots.delete(key);});
+    if(recentSnapshots.size>64)for(const [k,v]of recentSnapshots)if(v.settled!==undefined&&now-v.settled>=1000)recentSnapshots.delete(k);
     return value;
   }
   // Notify sockets only when their session's snapshot actually changes, instead of every tick.
@@ -474,7 +503,9 @@ export function createBridge(options:BridgeOptions) {
       for(const session of sessions) {
         let value:Record<string,unknown>;try{value=await deadline(snapshotOf(session),3000);}catch{continue;}
         if(stopped)return;
-        const print=hash(canonical(value,new Set(["ts","revision"]))),key=session??"",previous=fingerprints.get(key);
+        // Programs an agent runs as tools come and go all the time; no app shows them (identity, status and the
+        // process group still count), so they don't make every phone fetch the whole snapshot again.
+        const print=hash(canonical(value,new Set(["ts","revision","foregroundProcesses"]))),key=session??"",previous=fingerprints.get(key);
         fingerprints.set(key,print);
         if(previous!==undefined && previous!==print)for(const ws of sockets)if((ws.data.session??"")===key)send(ws,{type:"snapshot_changed"});
       }
@@ -500,7 +531,8 @@ export function createBridge(options:BridgeOptions) {
       // A phone that stopped reading a socket (closed on its side, the close lost) leaves frames piling up and
       // never answers: end it, so it stops counting against the phone's four sockets.
       else if(behind(ws) && Date.now()-(ws.data.heard??0)>(options.silentSocketMilliseconds??20_000)){sockets.delete(ws);console.error(JSON.stringify({event:"live_socket_dead",device:ws.data.device.id.slice(0,8),pane:ws.data.pane??null}));clearStream(ws);try{ws.terminate();}catch{}}
-      // An idle pane sends no further full frame; resubscribe once the link has drained.
+      // An idle pane sends no further full frame: ask its helper for one, else resubscribe once the link has drained.
+      else if(ws.data.skippingSince!==undefined && drained(ws) && refresh(ws)){}
       else if(ws.data.skippingSince!==undefined && Date.now()-ws.data.skippingSince>3000 && drained(ws)){clearStream(ws);send(ws,{type:"stream_closed",reason:"resync_required"});}
     }
     // A large Herdr session can take ~0.5s to snapshot; every other tick keeps that load modest.

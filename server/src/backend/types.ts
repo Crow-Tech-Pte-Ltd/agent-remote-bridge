@@ -20,6 +20,9 @@ export interface TerminalFrame {
 export interface TerminalHandle {
   command(value: Record<string, unknown>): Promise<void>;
   close(): void;
+  /** Sends this stream a full frame of the current screen, so a stream the bridge skipped ahead on resumes at once.
+   *  Only backends that keep their own screen (plain terminals) can; for others the client resynchronises. */
+  refresh?(): void | Promise<void>;
 }
 
 export interface TranscriptMessage {
@@ -35,7 +38,9 @@ export interface HostBackend {
   /** Terminals this bridge itself runs (plain backend): they end when the bridge restarts. */
   liveTerminals?(): number;
   snapshot(session?: string): Promise<Record<string, unknown>>;
-  identity(session: string | undefined, paneId: string): Promise<PaneIdentity>;
+  /** `shared`: the caller only looks (the bridge's identity sweep), so it may share a read already in flight. Checks
+   *  that guard input, control or changes never pass it. */
+  identity(session: string | undefined, paneId: string, options?: { shared?: boolean }): Promise<PaneIdentity>;
   output(session: string | undefined, paneId: string, lines?: number): Promise<Record<string, unknown>>;
   /** `tail` true reads the newest page; a string is the `earlier` value of a page and reads the one before it. */
   transcript(session: string | undefined, paneId: string, cursor?: string, tail?: boolean | string): Promise<Record<string, unknown>>;

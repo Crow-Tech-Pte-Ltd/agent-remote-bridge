@@ -193,8 +193,10 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
       if(!Number.isInteger(o.cols)||o.cols<20||o.cols>400||!Number.isInteger(o.rows)||o.rows<5||o.rows>200)throw new BackendError('invalid_dimensions','Invalid terminal dimensions',400);
       const p=pane(o.paneId,o.expectedIdentityToken);const token=identity(p).identityToken;
       if(o.control&&p.controller){if(!o.takeover)throw new BackendError('controller_conflict','Another device controls this terminal',409);p.controller.close('control_taken_over');}
-      let closed=false;
-      const viewer:Viewer={control:o.control,emit:frame=>{if(!closed)o.onFrame({type:'pane_frame',paneId:p.id,identityToken:token,...frame});},
+      // Sequence numbers are per stream: a full frame for a viewer that joins later must not open a gap in the
+      // others' numbering (that made every other viewer resynchronise). `p.seq` stays the pane's revision.
+      let closed=false,seq=0;
+      const viewer:Viewer={control:o.control,emit:frame=>{if(!closed)o.onFrame({type:'pane_frame',paneId:p.id,identityToken:token,...frame,seq:seq++});},
         close:reason=>{if(closed)return;closed=true;p.viewers.delete(viewer);if(p.controller===viewer){p.controller=undefined;if(p.screen.buffer.active.viewportY!==p.screen.buffer.active.baseY){p.screen.scrollToBottom();broadcastFull(p);}}o.onClose(reason);}};
       await settled(p);
       if(o.control)p.controller=viewer;
@@ -217,6 +219,8 @@ export function createPlainBackend(options:PlainBackendOptions):HostBackend {
           p.proc.terminal!.write(typeof v.text==='string'?v.text:Buffer.from(v.bytes as string,'base64'));
         },
         close:()=>viewer.close('released'),
+        // Only this stream gets the full frame; once earlier output has been drawn, so it can't arrive after it.
+        refresh:async()=>{if(closed)return;await settled(p);if(!closed&&panes.get(p.id)===p)viewer.emit(full(p));},
       };
     },
     async submitText(session,id,value,submit,expected) {
