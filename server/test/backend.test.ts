@@ -99,3 +99,22 @@ test('Herdr: a new workspace, tab or split in a missing folder creates it just b
  await expect(f.backend.mutate('workspace.create',undefined,{cwd:join(f.dir,'file.txt')})).rejects.toMatchObject({code:'invalid_cwd'});
  expect(f.calls.slice(calls).some(c=>['workspace.create','tab.create','pane.split'].includes(c.method))).toBe(false);
 });
+test('identity reads that only look share the snapshot in flight; guarded checks always read their own',async()=>{
+ const f=await fake();const snapshots=()=>f.calls.filter(c=>c.method==='session.snapshot').length;
+ const token=(await f.backend.identity(undefined,'w1:p1')).identityToken;
+ // The bridge's sweep checks every watched pane at once: one Herdr snapshot between them.
+ let before=snapshots();
+ const swept=await Promise.all([1,2,3,4].map(()=>f.backend.identity(undefined,'w1:p1',{shared:true})));
+ expect(snapshots()-before).toBe(1);expect(swept.every(i=>i.identityToken===token)).toBe(true);
+ // Checks before input or control never share.
+ before=snapshots();
+ await Promise.all([1,2,3].map(()=>f.backend.identity(undefined,'w1:p1')));
+ expect(snapshots()-before).toBe(3);
+ // A shared read joins the newest read in flight, so it sees what a fresh read started earlier saw.
+ before=snapshots();f.setFg(7);
+ const [fresh,shared]=await Promise.all([f.backend.identity(undefined,'w1:p1'),f.backend.identity(undefined,'w1:p1',{shared:true})]);
+ expect(snapshots()-before).toBe(1);expect(shared.identityToken).toBe(fresh.identityToken);expect(fresh.identityToken).not.toBe(token);
+ // Snapshots share too.
+ before=snapshots();await Promise.all([f.backend.snapshot(),f.backend.identity(undefined,'w1:p1',{shared:true})]);
+ expect(snapshots()-before).toBe(1);
+});

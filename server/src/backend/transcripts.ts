@@ -124,9 +124,10 @@ export type TranscriptRoots=Partial<Record<keyof typeof STORAGE,string>>;
 interface Cursor {v:1;binding:string;file:string;offset:number;prefix:string;drop?:boolean}
 /** Marks where a page read backwards began, so the next page back ends there. The prefix hash proves the log before it is unchanged. */
 interface Earlier {v:1;binding:string;file:string;before:number;prefix:string}
-const located=new Map<string,{path:string|null;at:number}>(),spokenAt=new Map<string,{size:number;mtime:number;at?:number}>();
+const located=new Map<string,{path:string|null;at:number}>(),spokenAt=new Map<string,{size:number;mtime:number;dev:number;ino:number;scanned:number;at?:number}>();
 /** When the user or the agent last said something in this session (Unix ms), read from the end of its log; tool
- *  output doesn't count. Cached by the log's size and mtime, so a quiet session costs one stat per snapshot. */
+ *  output doesn't count. Cached by the log's size and mtime, so a quiet session costs one stat per snapshot. A log
+ *  that only grew (a working agent's, on every snapshot) is read from where the last read's complete lines ended. */
 export async function lastMessageAt(home:string,native:NativeSession|undefined,roots?:TranscriptRoots):Promise<number|undefined> {
   if(!native||!(native.agent in STORAGE)||native.source!==`herdr:${native.agent}`)return;
   const root=roots?.[native.agent as keyof typeof STORAGE]??join(home,STORAGE[native.agent as keyof typeof STORAGE]);
@@ -138,18 +139,25 @@ export async function lastMessageAt(home:string,native:NativeSession|undefined,r
   const cached=spokenAt.get(hit.path);
   if(cached&&cached.size===info.size&&cached.mtime===info.mtimeMs)return cached.at;
   let at=cached?.at;
+  // Appended to (same file, larger): only the new lines can hold a newer message. Otherwise read the last 1 MB.
+  const start=cached&&cached.dev===info.dev&&cached.ino===info.ino&&info.size>cached.size?cached.scanned:0;
+  // `scanned` only moves past lines that were read: a log that couldn't be opened is read from the same place next time.
+  const from=Math.max(start,info.size-1024*1024);let scanned=start;
   const handle=await open(hit.path,constants.O_RDONLY|constants.O_NOFOLLOW).catch(()=>null);
   if(handle)try {
-    const length=Math.min(info.size,1024*1024),buf=Buffer.alloc(length);
-    const {bytesRead}=await handle.read(buf,0,length,info.size-length);
-    const lines=buf.subarray(0,bytesRead).toString('utf8').split('\n');if(info.size>length)lines.shift();
+    const length=info.size-from,buf=Buffer.alloc(length);
+    const {bytesRead}=await handle.read(buf,0,length,from);
+    const data=buf.subarray(0,bytesRead),end=data.lastIndexOf(10);
+    // A last line without its newline may still be being written: it is read again next time.
+    scanned=end<0?from:from+end+1;
+    const lines=data.toString('utf8').split('\n');if(from>start)lines.shift();
     for(let i=lines.length-1;i>=0;i--) {
       let row:any;try{row=JSON.parse(lines[i]!);}catch{continue;}
       const said=normalizeTranscriptRecord(native.agent,row,'tail').find(spoken),time=said?.timestamp?Date.parse(said.timestamp):NaN;
       if(Number.isFinite(time)){at=time;break;}
     }
   }finally{await handle.close();}
-  if(spokenAt.size>=512)spokenAt.clear();spokenAt.set(hit.path,{size:info.size,mtime:info.mtimeMs,at});
+  if(spokenAt.size>=512)spokenAt.clear();spokenAt.set(hit.path,{size:info.size,mtime:info.mtimeMs,dev:info.dev,ino:info.ino,scanned,at});
   return at;
 }
 /** `tail` (without a cursor) starts from the newest records instead of the session start; a string is an
@@ -179,13 +187,14 @@ export async function readTranscript(home:string, native:NativeSession|undefined
     if(!nativeId || (native.kind==='id'&&nativeId!==native.value))return none('session_metadata_mismatch');
     const binding=digest(identityToken+'\0'+native.source+'\0'+native.agent+'\0'+nativeId);
     const file=`${stat.dev}:${stat.ino}`;
-    let offset=0,reset=!!cursor,drop=false;
+    let offset=0,reset=!!cursor,drop=false,verified:string|undefined;
     if(cursor&&cursor.length<=2048)try {
       const c=JSON.parse(Buffer.from(cursor,'base64url').toString()) as Cursor;
       if(c.v===1&&c.binding===binding&&c.file===file&&Number.isSafeInteger(c.offset)&&c.offset>=0&&c.offset<=stat.size) {
-        if(await prefixHash(c.offset)===c.prefix){offset=c.offset;drop=!!c.drop;reset=false;}
+        if(await prefixHash(c.offset)===c.prefix){offset=c.offset;drop=!!c.drop;reset=false;verified=c.prefix;}
       }
     }catch{}
+    const verifiedOffset=verified!==undefined?offset:-1;
     const messages:TranscriptMessage[]=[];let truncated=false;let pending=false;let unread=false;
     let earlier:string|null=null;
     if(typeof tail==='string'||(tail&&!cursor)) {
@@ -259,7 +268,9 @@ export async function readTranscript(home:string, native:NativeSession|undefined
     const end=await handle.stat();
     // Appends are allowed; truncation or same-size rewrites during this read require a fresh request.
     if(end.size<stat.size||(end.mtimeMs!==stat.mtimeMs&&end.size<=stat.size))return none('session_file_changed_during_read');
-    const next:Cursor={v:1,binding,file,offset,prefix:await prefixHash(offset),...(drop?{drop:true}:{})};
+    // A poll that found nothing new ends where it started: the prefix just verified is the next cursor's (up to 8 MB
+    // hashed once per poll, not twice). A prefix rewritten meanwhile fails the next poll's check and resets.
+    const next:Cursor={v:1,binding,file,offset,prefix:verified!==undefined&&offset===verifiedOffset?verified:await prefixHash(offset),...(drop?{drop:true}:{})};
     return {source:native.agent,supported:true,messages,cursor:Buffer.from(JSON.stringify(next)).toString('base64url'),...(tail&&!cursor?{earlier}:{}),reset,truncated:truncated||unread,hasMore:truncated||unread,...(pending?{pending:true}:{})};
   } finally {await handle.close();}
 }

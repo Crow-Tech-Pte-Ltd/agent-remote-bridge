@@ -159,6 +159,31 @@ test("controller cache overflow preserves lease and resubscribes with a fresh fu
   await eventually(()=>s.messages.some(m=>m.type==="pane_frame" && m.full));expect(f.backend.observers).toBe(1);
   const response=await f.request("/v1/panes/p/input",a.token,"POST",{requestId:randomUUID(),leaseId:lease.leaseId,identityToken:"identity-1",text:"still controlled"});expect(response.status).toBe(200);expect(f.backend.submitted).toBe(1);
 });
+test("re-observing a lease with a long frame cache starts a fresh observer instead of a replay that would resync",async()=>{
+  const f=fixture(),a=f.device();
+  const original=f.backend.terminal.bind(f.backend);let emit:((frame:TerminalFrame)=>void)|undefined;
+  f.backend.terminal=async options=>{if(options.control)emit=options.onFrame;return original(options);};
+  const lease=await f.lease(a.token),big=Buffer.alloc(22_000,2).toString("base64");
+  // A busy controller: one full frame, then about 300 KB of deltas.
+  for(let seq=2;seq<=11;seq++)emit!({type:"pane_frame",paneId:"p",identityToken:"identity-1",seq,full:false,width:80,height:24,bytes:big});
+  expect(f.bridge.controls.get(lease.leaseId,a.deviceId).frames).toHaveLength(11);
+  const s=await socket(f.base,a.token),frames=()=>s.messages.filter(m=>m.type==="pane_frame");
+  // The app acknowledges what arrives (acks), as on a relayed computer.
+  const acker=setInterval(()=>s.ws.send(JSON.stringify({type:"ack",bytes:frames().reduce((n,m)=>n+JSON.stringify(m).length,0)})),100);cleanup.push(()=>clearInterval(acker));
+  s.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",leaseId:lease.leaseId,cols:80,rows:24,acks:true}));
+  await eventually(()=>frames().some(m=>m.full));expect(f.backend.observers).toBe(1);
+  await Bun.sleep(3500);
+  expect(s.messages.filter(m=>m.type==="stream_closed")).toEqual([]);
+  expect((await f.request("/v1/panes/p/input",a.token,"POST",{requestId:randomUUID(),leaseId:lease.leaseId,identityToken:"identity-1",text:"still controlled"})).status).toBe(200);
+  // A short cache (a full frame and a few deltas) is still replayed at once, with no extra helper.
+  emit!({type:"pane_frame",paneId:"p",identityToken:"identity-1",seq:12,full:true,width:80,height:24,bytes:"eA=="});
+  emit!({type:"pane_frame",paneId:"p",identityToken:"identity-1",seq:13,full:false,width:80,height:24,bytes:"eQ=="});
+  const t=await socket(f.base,a.token);
+  t.ws.send(JSON.stringify({type:"observe",paneId:"p",identityToken:"identity-1",leaseId:lease.leaseId,cols:80,rows:24}));
+  await eventually(()=>t.messages.filter(m=>m.type==="pane_frame").length===2);
+  expect(t.messages.filter(m=>m.type==="pane_frame").map(m=>[m.seq,m.full])).toEqual([[12,true],[13,false]]);
+  expect(f.backend.observers).toBe(1);
+},10_000);
 
 test("CLI initializes an independent private state and cleans its lock after failed bind",async()=>{
   const dir=directory(),occupied=fixture();
@@ -260,6 +285,16 @@ describe("response cost",()=>{
     const results=await Promise.all(Array.from({length:4},()=>f.request("/v1/snapshot",d.token).then(r=>r.json() as Promise<any>)));
     expect(reads).toBe(1);expect(new Set(results.map(r=>r.read))).toEqual(new Set([1]));
     const created=await f.request("/v1/workspaces",d.token,"POST",{requestId:randomUUID(),cwd:"/tmp"});expect(created.status).toBe(200);
+    expect((await (await f.request("/v1/snapshot",d.token)).json() as any).read).toBe(2);
+  });
+  test("a slow snapshot read is shared until a second after it returns, not a second after it started",async()=>{
+    const f=fixture(),d=f.device("control");let reads=0;
+    (f.backend as {snapshot:()=>Promise<Record<string,unknown>>}).snapshot=async()=>{reads++;await Bun.sleep(700);return {agents:[],shellPanes:[],workspaces:[],tabs:[],sessions:[],capabilities:{},read:reads};};
+    expect((await (await f.request("/v1/snapshot",d.token)).json() as any).read).toBe(1);
+    // 1.2 s after the read started, 0.5 s after it returned (a phone told of a change, over the relay).
+    await Bun.sleep(500);
+    expect((await (await f.request("/v1/snapshot",d.token)).json() as any).read).toBe(1);
+    await Bun.sleep(600);
     expect((await (await f.request("/v1/snapshot",d.token)).json() as any).read).toBe(2);
   });
   test("a folder created for a new terminal goes in the console's recent activity, home shown as ~",async()=>{

@@ -66,14 +66,23 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   function selected(session?:string):string {const name=session||primary;if(!validName(name))throw new BackendError('invalid_session','Invalid session name',400);return name;}
   function socket(session:string):string {return session===primary&&configured?configured:session==='default'?join(configDir,'herdr.sock'):join(configDir,'sessions',session,'herdr.sock');}
   async function call(session:string,method:string,params:Record<string,unknown>={},write=false):Promise<any> {if(closed)throw new BackendError('backend_closed','Backend is closed');return rpc(socket(session),method,params,write);}
-  async function raw(session:string):Promise<any> {
-    const [reply,stat]=await Promise.all([call(session,'session.snapshot'),lstat(socket(session)).catch(()=>null)]);
-    const s=reply.snapshot;
-    if(!s||!Array.isArray(s.panes)||!Array.isArray(s.workspaces)||!Array.isArray(s.tabs)||s.panes.length>512)throw new BackendError('herdr_snapshot','Invalid or excessive Herdr snapshot');
-    return {...s,_epoch:sha(`${epoch}:${session}:${stat?.dev}:${stat?.ino}:${stat?.ctimeMs}`)};
+  /** A large session takes a while to snapshot. Reads that only look (snapshots, the bridge's identity sweep, which
+   *  checks every watched pane at once) share the newest read in flight; anything else starts its own, so a shared
+   *  read never started before a fresh one that already returned. */
+  const reading=new Map<string,Promise<any>>();
+  function raw(session:string,shared=false):Promise<any> {
+    const pending=reading.get(session);if(shared&&pending)return pending;
+    const read=(async()=>{
+      const [reply,stat]=await Promise.all([call(session,'session.snapshot'),lstat(socket(session)).catch(()=>null)]);
+      const s=reply.snapshot;
+      if(!s||!Array.isArray(s.panes)||!Array.isArray(s.workspaces)||!Array.isArray(s.tabs)||s.panes.length>512)throw new BackendError('herdr_snapshot','Invalid or excessive Herdr snapshot');
+      return {...s,_epoch:sha(`${epoch}:${session}:${stat?.dev}:${stat?.ino}:${stat?.ctimeMs}`)};
+    })();
+    reading.set(session,read);read.finally(()=>{if(reading.get(session)===read)reading.delete(session);}).catch(()=>{});
+    return read;
   }
-  async function pane(session:string,paneId:string) {
-    string(paneId,'paneId',128);const state=await raw(session);const p=state.panes.find((p:any)=>p.pane_id===paneId);
+  async function pane(session:string,paneId:string,shared=false) {
+    string(paneId,'paneId',128);const state=await raw(session,shared);const p=state.panes.find((p:any)=>p.pane_id===paneId);
     if(!p)throw new BackendError('pane_not_found','Pane is not present in the selected session',404);
     let process:any;
     try{const r=await call(session,'pane.process_info',{pane_id:paneId}); process=r.process_info??r.process??r;}catch(e){if(e instanceof BackendError&&e.status===503)throw e;}
@@ -105,7 +114,7 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
   }
   return {
     async snapshot(session) {
-      const name=selected(session),state=await raw(name);
+      const name=selected(session),state=await raw(name,true);
       const projected=[];
       // Bound parallel OS process discovery. No argv/cmdline is projected to clients.
       for(let start=0;start<state.panes.length;start+=8)projected.push(...await Promise.all(state.panes.slice(start,start+8).map(async(p:any)=>{
@@ -119,14 +128,14 @@ export function createHerdrBackend(options:HerdrBackendOptions={}):HostBackend {
       const names=new Set<string>([primary]);if(await lstat(join(configDir,'herdr.sock')).catch(()=>null))names.add('default');
       for(const entry of await readdir(join(configDir,'sessions'),{withFileTypes:true}).catch(()=>[]))if(entry.isDirectory()&&validName(entry.name)&&await lstat(join(configDir,'sessions',entry.name,'herdr.sock')).catch(()=>null))names.add(entry.name);
       const sessions=await Promise.all([...names].sort((a,b)=>a===primary?-1:b===primary?1:a.localeCompare(b)).slice(0,64).map(async n=>{
-        const s=n===name?state:await raw(n).catch(()=>null);const agents=s?.panes.filter((p:any)=>p.agent)??[];
+        const s=n===name?state:await raw(n,true).catch(()=>null);const agents=s?.panes.filter((p:any)=>p.agent)??[];
         return {name:n,isPrimary:n===primary,reachable:!!s,agents:agents.length,working:agents.filter((p:any)=>p.agent_status==='working').length,blocked:agents.filter((p:any)=>p.agent_status==='blocked').length};
       }));
       return {bridge:'connected',backend:{kind:'herdr',name:'Herdr',version:state.version,controlScope:'native'},session:name,epoch:state._epoch,herdrVersion:state.version,herdrProtocol:state.protocol,capabilities:caps(state),agents:projected.filter((p:any)=>p.kind==='agent'),shellPanes:projected.filter((p:any)=>p.kind==='shell'),
         workspaces:state.workspaces.map((w:any)=>({workspaceId:w.workspace_id,number:w.number,label:w.label,focused:w.focused,activeTabId:w.active_tab_id,tabCount:w.tab_count,paneCount:w.pane_count,...(w.worktree?{worktree:{repoKey:w.worktree.repo_key,repoName:w.worktree.repo_name,repoRoot:w.worktree.repo_root,checkoutPath:w.worktree.checkout_path,isLinkedWorktree:w.worktree.is_linked_worktree}}:{})})),
         tabs:state.tabs.map((t:any)=>({tabId:t.tab_id,workspaceId:t.workspace_id,number:t.number,label:t.label,focused:t.focused,paneCount:t.pane_count})),sessions,ts:Date.now()};
     },
-    async identity(session,paneId){return (await pane(selected(session),paneId)).identity;},
+    async identity(session,paneId,options){return (await pane(selected(session),paneId,options?.shared===true)).identity;},
     sessionName(session){try{return selected(session);}catch{return session??'';}},
     async output(session,paneId,lines=240) {
       if(!Number.isInteger(lines)||lines<1||lines>2000)throw new BackendError('invalid_lines','lines must be between 1 and 2000',400);
