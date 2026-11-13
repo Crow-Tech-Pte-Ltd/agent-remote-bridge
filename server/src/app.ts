@@ -2,6 +2,7 @@ import { say } from "./cli-output";
 import type { ServerWebSocket } from "bun";
 import { randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { HostBackend, TerminalHandle, TerminalFrame } from "./backend/types";
+import { agentCommands } from "./backend/agent-commands";
 import { Controls, deadline, scrollNotches } from "./control";
 import type { Lease } from "./control";
 import { BridgeError, failure } from "./errors";
@@ -350,10 +351,18 @@ export function createBridge(options:BridgeOptions) {
         }
         const parts=url.pathname.split("/").filter(Boolean).map(part=>{try{return str(decodeURIComponent(part));}catch{throw new BridgeError("invalid_request","Malformed path");}});
         if(request.method==="GET") {
-          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,liveAcks:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{}),...(options.updates?{bridgeUpdates:true}:{})},...(options.updates?{bridgeRelease:options.updates.status()}:{}),...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
+          if(url.pathname==="/v1/snapshot"){const value=await deadline(snapshotOf(session));return reply({...value,capabilities:{...(value.capabilities as object|undefined),liveInput:true,liveAcks:true,agentCommands:true,hostSizedTerminal:!!backend.paneSize,...(options.certificate?{certificateRenewal:true}:{}),...(options.relay?.credentials()?{relayCredential:true}:{}),...(options.updates?{bridgeUpdates:true}:{})},...(options.updates?{bridgeRelease:options.updates.status()}:{}),...(options.localRoutes?{routes:{local:options.localRoutes()}}:{}),hostId:state.hostId,epoch});}
           if(parts[1]==="operations" && parts.length===3){if(!UUID.test(parts[2]!))throw new BridgeError("invalid_request","Invalid operation ID");return reply(state.operation(device.id,parts[2]!));}
           if(parts[1]==="panes" && parts.length===4){
             if(parts[3]==="output"){const lines=url.searchParams.has("lines")?integer(Number(url.searchParams.get("lines")),1,2000):240;return reply(await deadline(backend.output(session,parts[2]!,lines)));}
+            // The slash commands the pane's agent offers on this computer (openspec/changes/suggest-agent-commands).
+            if(parts[3]==="commands"){
+              const value=await deadline(snapshotOf(session)) as {agents?:Record<string,unknown>[];shellPanes?:Record<string,unknown>[]};
+              const pane=[...(value.agents??[]),...(value.shellPanes??[])].find(p=>p.paneId===parts[2]);
+              if(!pane)throw new BridgeError("not_found","Pane not found",404);
+              const list=await deadline(agentCommands(typeof pane.agent==="string"?pane.agent:"shell",typeof pane.cwd==="string"?pane.cwd:"/"),15000);
+              return reply({paneId:pane.paneId,identityToken:pane.identityToken,...list});
+            }
             if(parts[3]==="transcript"){const cursor=url.searchParams.has("cursor")?str(url.searchParams.get("cursor"),4096):undefined;const earlier=url.searchParams.has("before")?str(url.searchParams.get("before"),4096):undefined;return reply(await deadline(backend.transcript(session,parts[2]!,earlier?undefined:cursor,earlier??url.searchParams.get("tail")==="1")));}
           }
           if(parts[1]==="workspaces" && parts.length===4){
