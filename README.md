@@ -7,6 +7,9 @@ transcripts, and (with an explicit control lease) type into terminals. The phone
 talks directly to your computer over TLS with a pinned certificate; there is no
 hosted service.
 
+The Android app is on [Google Play](https://play.google.com/store/apps/details?id=sg.crowtech.agentremote).
+The iPhone and iPad app is in testing and not on the App Store yet.
+
 The user docs are at [crow.sg/apps/ai-agent-remote/docs](https://crow.sg/apps/ai-agent-remote/docs/):
 quickstart, install, pairing, the web console, reaching the bridge from anywhere, security,
 the CLI reference and troubleshooting.
@@ -18,7 +21,8 @@ curl -fsSL https://crow.sg/apps/ai-agent-remote/install.sh | sh
 ```
 
 The script picks the release kit for your Mac or Linux computer, checks it against the release's
-`SHA256SUMS` and installs `herdr-remote` into `~/.local/bin` (no sudo). crow.sg serves an exact
+`SHA256SUMS` and installs the `agent-remote` command into `~/.local/bin` (no sudo), plus
+`herdr-remote`, its earlier name, which keeps working. crow.sg serves an exact
 copy of [`install.sh`](install.sh) from this repository (the *Publish installer* workflow keeps it
 in sync); the kits themselves come from this repository's GitHub Releases. Or use Homebrew:
 
@@ -35,7 +39,7 @@ docker run -d --name agent-remote-relay -p 8788:8788 -v agent-remote-relay:/stat
 ```
 
 Kits for manual download are on the [releases page](https://github.com/Crow-Tech-Pte-Ltd/agent-remote-bridge/releases).
-Then run `herdr-remote up` (below). A local web console opens in your browser to change settings,
+Then run `agent-remote up` (below). A local web console opens in your browser to change settings,
 pair phones and manage the relay (`--no-console` turns it off).
 
 ## Updating
@@ -46,9 +50,9 @@ From 0.1.30 the bridge keeps itself up to date:
 - It restarts into it once no phone has been connected for 2 minutes. The process stays the same, so launchd, systemd or your terminal carry on, and phones reconnect by themselves.
 
 To control it:
-- `herdr-remote update` installs the newest release now and restarts the running bridge.
-- `herdr-remote update --check` only reports.
-- `herdr-remote update --mode notify` only tells phones; `--mode off` stops checking.
+- `agent-remote update` installs the newest release now and restarts the running bridge.
+- `agent-remote update --check` only reports.
+- `agent-remote update --mode notify` only tells phones; `--mode off` stops checking.
 - Phones with control access show the update, can start it, and can turn automatic updates off.
 
 Bridges older than 0.1.30 need one manual update: run the install script again, or `brew upgrade agent-remote-bridge`.
@@ -80,7 +84,7 @@ become workspaces (add more from the phone), and agents started in them (Claude 
 Codex, OpenCode, Pi, Gemini, Qwen and others) are recognised. Only the backend you choose runs.
 
 A single-file binary works the same way:
-`bun build src/cli.ts --compile --outfile herdr-remote`, then `./herdr-remote up`.
+`bun build src/cli.ts --compile --outfile agent-remote`, then `./agent-remote up`.
 
 ## Start with the computer
 
@@ -104,8 +108,8 @@ agent-remote service uninstall
 
 ## Away from your network
 
-Behind NAT or a work firewall? Run `herdr-remote relay serve` on a server both sides can reach
-(behind HTTPS, e.g. Cloudflare Tunnel) and `herdr-remote relay join relay.json` on the computer;
+Behind NAT or a work firewall? Run `agent-remote relay serve` on a server both sides can reach
+(behind HTTPS, e.g. Cloudflare Tunnel) and `agent-remote relay join relay.json` on the computer;
 the bridge dials out and the phone still pins the computer's own certificate. See
 [`server/README.md`](server/README.md#away-from-your-network-reverse-relay).
 
