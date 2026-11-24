@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" width="112" alt="AI Agent Remote logo"></p>
+
 # AI Agent Remote bridge
 
 The open-source host for **AI Agent Remote**, an iPhone/Android companion for
